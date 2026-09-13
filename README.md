@@ -16,7 +16,9 @@ Minimal Go project scaffold for a tennis camp Telegram bot.
    go run ./cmd/bot
    ```
 
-The application code is intentionally minimal at this stage. Local development will use polling, while production will use a webhook.
+The bot runs in polling mode for local development. Open it in Telegram and send `/start`; it should offer three camp destinations. Select a destination to receive its short description. Stop the bot with `Ctrl+C`.
+
+Production will use a webhook in a later development stage.
 
 ## Checks
 
