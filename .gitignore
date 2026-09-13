@@ -1,0 +1,21 @@
+# Environment files
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+
+# IDE
+.idea/
+
+# Build output
+bin/
+
+# Coverage
+coverage.out
+coverage.*
+*.coverprofile
+
+# Logs
+*.log
+logs/
