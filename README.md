@@ -16,7 +16,9 @@ Minimal Go project scaffold for a tennis camp Telegram bot.
    go run ./cmd/bot
    ```
 
-The bot runs in polling mode for local development. Open it in Telegram and send `/start`; it should offer three camp destinations. Select a destination to receive its short description. Stop the bot with `Ctrl+C`.
+The bot runs in polling mode for local development. Open it in Telegram, send `/start`, choose a camp, and ask a question in plain text. The bot uses only the selected camp's card as AI context. Questions about booking, payment, visas, availability, or missing facts are sent to the operator chat when `TELEGRAM_MANAGER_CHAT_ID` is configured.
+
+To enable test AI, create an OpenRouter API key and set `OPENROUTER_API_KEY` in `.env`. The bot uses the `openrouter/free` model router, which is suitable only for low-volume testing.
 
 Production will use a webhook in a later development stage.
 
