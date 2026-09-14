@@ -230,6 +230,7 @@ func (a *app) messageHandler(ctx context.Context, telegramBot *bot.Bot, update *
 // answerQuestion asks the AI or escalates to an operator.
 func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID int64, from *models.User, question string) {
 	switch planQuestion(question, a.ai.enabled(), a.operatorsEnabled()) {
+	case planAI:
 	case planOperator:
 		a.openTicket(ctx, telegramBot, chatID, from, question, "")
 		return
@@ -328,12 +329,11 @@ func (a *app) operatorMessageHandler(ctx context.Context, telegramBot *bot.Bot, 
 	}
 
 	current, result := a.store.operatorReplyTarget(message.ReplyToMessage.ID, message.From.ID)
-	if result == replyUnknown {
-		return
-	}
-
 	notice := ""
 	switch result {
+	case replyAllowed:
+	case replyUnknown:
+		return
 	case replyClosed:
 		notice = ticketClosedNotice
 	case replyNotTaken:

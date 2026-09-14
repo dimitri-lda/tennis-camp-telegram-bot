@@ -86,7 +86,7 @@ func (c *aiClient) enabled() bool {
 }
 
 // ask sends the knowledge base, the selected camp and the current question to OpenRouter.
-func (c *aiClient) ask(ctx context.Context, knowledge, selectedCamp, question string) (aiDecision, error) {
+func (c *aiClient) ask(ctx context.Context, knowledge, selectedCamp, question string) (decision aiDecision, resultErr error) {
 	if !c.enabled() {
 		return aiDecision{}, errors.New("OpenRouter API key is not configured")
 	}
@@ -121,7 +121,12 @@ func (c *aiClient) ask(ctx context.Context, knowledge, selectedCamp, question st
 	if err != nil {
 		return aiDecision{}, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil && resultErr == nil {
+			decision = aiDecision{}
+			resultErr = fmt.Errorf("close OpenRouter response: %w", err)
+		}
+	}()
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return aiDecision{}, fmt.Errorf("OpenRouter returned HTTP %d", response.StatusCode)
