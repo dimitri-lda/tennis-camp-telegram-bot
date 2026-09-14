@@ -20,12 +20,25 @@ const (
 	ticketClosed
 )
 
+const (
+	sessionRoleUser      = "user"
+	sessionRoleAssistant = "assistant"
+	sessionRoleOperator  = "operator"
+)
+
+type sessionMessage struct {
+	role string
+	text string
+}
+
 type chatState struct {
-	campID       string
-	stage        dialogStage
-	lastQuestion string
-	lastAnswer   string
-	ticketID     int64
+	campID        string
+	stage         dialogStage
+	lastQuestion  string
+	lastAnswer    string
+	ticketID      int64
+	sessionActive bool
+	history       []sessionMessage
 }
 
 type ticket struct {
@@ -39,6 +52,7 @@ type ticket struct {
 	operatorID    int64
 	operatorName  string
 	status        ticketStatus
+	history       []sessionMessage
 }
 
 type takeResult int
@@ -89,7 +103,56 @@ func newStore() *store {
 func (s *store) chat(chatID int64) chatState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.chats[chatID]
+	state := s.chats[chatID]
+	state.history = cloneHistory(state.history)
+	return state
+}
+
+func (s *store) startSession(chatID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chats[chatID] = chatState{sessionActive: true}
+}
+
+func (s *store) sessionActive(chatID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.chats[chatID].sessionActive
+}
+
+func (s *store) appendHistory(chatID int64, role, text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.chats[chatID]
+	state.sessionActive = true
+	state.history = append(state.history, sessionMessage{role: role, text: text})
+	s.chats[chatID] = state
+}
+
+func (s *store) sessionHistory(chatID int64) []sessionMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneHistory(s.chats[chatID].history)
+}
+
+func (s *store) endSession(chatID int64) (ticket, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state := s.chats[chatID]
+	current, hasTicket := s.tickets[state.ticketID]
+	if hasTicket && current.status != ticketClosed {
+		current.status = ticketClosed
+		s.tickets[current.id] = current
+	} else {
+		hasTicket = false
+	}
+	delete(s.chats, chatID)
+	return current, hasTicket
+}
+
+func cloneHistory(history []sessionMessage) []sessionMessage {
+	return append([]sessionMessage(nil), history...)
 }
 
 func (s *store) update(chatID int64, mutate func(*chatState)) {
@@ -126,11 +189,13 @@ func (s *store) createTicket(clientChatID int64, campTitle, question, aiAnswer s
 		question:     question,
 		aiAnswer:     aiAnswer,
 		status:       ticketOpen,
+		history:      cloneHistory(state.history),
 	}
 	s.tickets[created.id] = created
 
 	state.ticketID = created.id
 	state.stage = stageIdle
+	state.sessionActive = true
 	state.lastQuestion = question
 	state.lastAnswer = aiAnswer
 	s.chats[clientChatID] = state

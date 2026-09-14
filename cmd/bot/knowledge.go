@@ -124,6 +124,14 @@ func campSummary(knowledge string, selected camp) (string, bool) {
 	return plainText(summary), true
 }
 
+func campDetails(knowledge string, selected camp) (string, bool) {
+	title, section, ok := campSection(knowledge, selected.heading)
+	if !ok {
+		return "", false
+	}
+	return plainText(title + "\n\n" + section), true
+}
+
 // campTitle returns the knowledge base title of the selected camp.
 func campTitle(knowledge, campID string) string {
 	selected, ok := campByID(campID)
@@ -150,5 +158,28 @@ func headingLevel(line string) int {
 func plainText(text string) string {
 	text = strings.ReplaceAll(text, "**", "")
 	text = strings.ReplaceAll(text, "\n> ", "\n")
-	return strings.TrimSpace(strings.TrimPrefix(text, "> "))
+	lines := strings.Split(strings.TrimPrefix(text, "> "), "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if headingLevel(trimmed) > 0 {
+			line = strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+		}
+		if strings.HasPrefix(trimmed, "|") && strings.HasSuffix(trimmed, "|") {
+			cells := strings.Split(strings.Trim(trimmed, "|"), "|")
+			separator := true
+			for index, cell := range cells {
+				cells[index] = strings.TrimSpace(cell)
+				if strings.Trim(cells[index], " :-") != "" {
+					separator = false
+				}
+			}
+			if separator {
+				continue
+			}
+			line = strings.Join(cells, " — ")
+		}
+		result = append(result, line)
+	}
+	return strings.TrimSpace(strings.Join(result, "\n"))
 }

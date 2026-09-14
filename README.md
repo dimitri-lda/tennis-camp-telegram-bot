@@ -39,23 +39,29 @@ file is missing or empty.
 
 ## Client flow
 
-1. `/start` shows the main menu: three camps, «О Dzala» and «Задать вопрос».
-2. Choosing a camp stores it for the chat and sends the short camp card taken
-   from the knowledge base.
+1. `/start` starts a session and shows the main menu: three camps, «О Dzala»
+   and «Задать вопрос». A plain text message sent before `/start` starts a session,
+   shows the menu and is then processed as the first question.
+2. Choosing a camp stores it for the session and shows «О кэмпе», «Связаться с
+   оператором» and «Главное меню». «О кэмпе» opens a short card from the knowledge
+   base, followed by an option to view detailed information.
 3. Any plain text message is treated as a question. The bot sends the knowledge
-   base, the selected camp and the question to OpenRouter and expects a JSON
-   action: `answer`, `clarify` or `handoff`.
-4. `answer` and `clarify` replies carry a «Связаться с оператором» button.
-   Questions about booking, availability, payment, discounts, refunds,
-   cancellation, visas, flights, medical limitations or individual conditions go
-   to an operator without an AI call.
-5. When the AI is unavailable or answers with something unexpected, the client is
-   offered an operator instead of a technical error.
+   base, selected camp, complete in-memory session history and current question to
+   OpenRouter and expects a strict JSON action: `answer`, `clarify` or `handoff`.
+4. `answer` and `clarify` replies carry operator and main-menu buttons. Questions
+   about booking, availability, payment, discounts, refunds, cancellation, visas,
+   flights, medical limitations or individual conditions go to an operator
+   without an AI call.
+5. If AI fails or cannot provide useful data, recognized camp and topic words are
+   used to suggest the relevant «О кэмпе» button. Otherwise the client is offered
+   an operator instead of a technical error.
+6. `/exit` closes an active operator ticket, notifies the operator group and
+   clears the current session. The next plain text message starts a new session.
 
 ## Operator flow
 
-1. A handoff posts a ticket card into the operator group with «Взять заявку» and
-   «Закрыть заявку» buttons.
+1. A handoff posts a ticket card and the complete current session transcript into
+   the operator group with «Взять заявку» and «Закрыть заявку» buttons.
 2. The first operator who presses «Взять заявку» becomes responsible; the card is
    updated with their name and everyone else sees a notification that the ticket
    is already taken.

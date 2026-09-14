@@ -60,8 +60,11 @@ func main() {
 	}
 
 	telegramBot.RegisterHandler(bot.HandlerTypeMessageText, "start", bot.MatchTypeCommand, application.startHandler)
+	telegramBot.RegisterHandler(bot.HandlerTypeMessageText, "exit", bot.MatchTypeCommand, application.exitHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeMessageText, "chatid", bot.MatchTypeCommandStartOnly, application.chatIDHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, campCallbackPrefix, bot.MatchTypePrefix, application.campHandler)
+	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, campInfoCallbackPrefix, bot.MatchTypePrefix, application.campInfoHandler)
+	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, campDetailsCallbackPrefix, bot.MatchTypePrefix, application.campDetailsHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, aboutCallbackData, bot.MatchTypeExact, application.aboutHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, askCallbackData, bot.MatchTypeExact, application.askHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, operatorCallbackData, bot.MatchTypeExact, application.operatorHandler)

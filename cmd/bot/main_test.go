@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/go-telegram/bot/models"
 )
@@ -29,6 +30,55 @@ func TestRequiresOperator(t *testing.T) {
 	for _, test := range tests {
 		if got := requiresOperator(test.question); got != test.want {
 			t.Errorf("requiresOperator(%q) = %t, want %t", test.question, got, test.want)
+		}
+	}
+}
+
+func TestUnsupportedContentIgnoresServiceMessages(t *testing.T) {
+	if hasUnsupportedContent(&models.Message{NewChatMembers: []models.User{{ID: 1}}}) {
+		t.Error("service message was treated as unsupported user content")
+	}
+	if !hasUnsupportedContent(&models.Message{Photo: []models.PhotoSize{{}}}) {
+		t.Error("photo was not treated as unsupported user content")
+	}
+	if !hasUnsupportedContent(&models.Message{Voice: &models.Voice{}}) {
+		t.Error("voice message was not treated as unsupported user content")
+	}
+}
+
+func TestLocalFallbackMatchesCampAndTopic(t *testing.T) {
+	tests := []struct {
+		question       string
+		selectedCampID string
+		wantCampID     string
+		wantTopic      string
+		wantOK         bool
+	}{
+		{question: "Расскажи стоимость Тбилиси", wantCampID: "tbilisi", wantTopic: "стоимость", wantOK: true},
+		{question: "Какие там тренировки?", selectedCampID: "cape_town", wantCampID: "cape_town", wantTopic: "тренировки", wantOK: true},
+		{question: "Что такое Ценандали?", wantCampID: "tsinandali", wantOK: true},
+		{question: "Хочу задать вопрос", wantOK: false},
+		{question: "Совсем непонятный запрос", wantOK: false},
+	}
+
+	for _, test := range tests {
+		hint, ok := matchLocalFallback(test.question, test.selectedCampID)
+		if ok != test.wantOK || hint.campID != test.wantCampID || hint.topic != test.wantTopic {
+			t.Errorf("matchLocalFallback(%q) = %+v, %t, want camp=%q topic=%q ok=%t", test.question, hint, ok, test.wantCampID, test.wantTopic, test.wantOK)
+		}
+	}
+}
+
+func TestFormatSessionHistory(t *testing.T) {
+	history := []sessionMessage{
+		{role: sessionRoleUser, text: "Расскажите про Тбилиси"},
+		{role: sessionRoleAssistant, text: "Кэмп проходит в Тбилиси."},
+		{role: sessionRoleOperator, text: "Добрый день!"},
+	}
+	formatted := formatSessionHistory(history)
+	for _, want := range []string{"Клиент: Расскажите про Тбилиси", "Бот: Кэмп проходит в Тбилиси.", "Оператор: Добрый день!"} {
+		if !strings.Contains(formatted, want) {
+			t.Errorf("formatSessionHistory() = %q, want %q", formatted, want)
 		}
 	}
 }
@@ -144,6 +194,33 @@ func TestTelegramErrorSummaryDoesNotExposeErrorText(t *testing.T) {
 	summary := telegramErrorSummary(errors.New(secret))
 	if strings.Contains(summary, "SECRET") || strings.Contains(summary, "api.telegram.org") {
 		t.Errorf("telegramErrorSummary() leaked sensitive URL: %q", summary)
+	}
+}
+
+func TestCampKeyboardsKeepMainMenuAvailable(t *testing.T) {
+	selected := selectedCampKeyboard("tbilisi").InlineKeyboard
+	if len(selected) != 3 || selected[0][0].CallbackData != campInfoCallbackPrefix+"tbilisi" || selected[2][0].CallbackData != menuCallbackData {
+		t.Errorf("selectedCampKeyboard() = %+v", selected)
+	}
+
+	info := campInfoKeyboard("tbilisi").InlineKeyboard
+	if len(info) != 3 || info[0][0].CallbackData != campDetailsCallbackPrefix+"tbilisi" || info[2][0].CallbackData != menuCallbackData {
+		t.Errorf("campInfoKeyboard() = %+v", info)
+	}
+}
+
+func TestSplitLongTextKeepsEveryPartWithinLimit(t *testing.T) {
+	parts := splitLongText(strings.Repeat("я", 25), 10)
+	if len(parts) != 3 {
+		t.Fatalf("splitLongText() returned %d parts, want 3", len(parts))
+	}
+	if strings.Join(parts, "") != strings.Repeat("я", 25) {
+		t.Error("splitLongText() lost content")
+	}
+	for _, part := range parts {
+		if utf8.RuneCountInString(part) > 10 {
+			t.Errorf("part length = %d, want at most 10", utf8.RuneCountInString(part))
+		}
 	}
 }
 

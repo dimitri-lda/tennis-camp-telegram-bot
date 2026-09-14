@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/go-telegram/bot"
@@ -14,20 +15,24 @@ import (
 )
 
 const (
-	campCallbackPrefix   = "camp:"
-	aboutCallbackData    = "about"
-	askCallbackData      = "ask"
-	operatorCallbackData = "operator"
-	menuCallbackData     = "menu"
-	takeTicketPrefix     = "ticket:take:"
-	closeTicketPrefix    = "ticket:close:"
+	campCallbackPrefix        = "camp:"
+	campInfoCallbackPrefix    = "camp_info:"
+	campDetailsCallbackPrefix = "camp_details:"
+	aboutCallbackData         = "about"
+	askCallbackData           = "ask"
+	operatorCallbackData      = "operator"
+	menuCallbackData          = "menu"
+	takeTicketPrefix          = "ticket:take:"
+	closeTicketPrefix         = "ticket:close:"
 
-	askButtonText      = "✍️ Задать вопрос"
-	aboutButtonText    = "🎾 О Dzala"
-	operatorButtonText = "👤 Связаться с оператором"
-	menuButtonText     = "⬅️ Главное меню"
-	takeButtonText     = "✅ Взять заявку"
-	closeButtonText    = "❌ Закрыть заявку"
+	askButtonText         = "✍️ Задать вопрос"
+	aboutButtonText       = "🎾 О Dzala"
+	campInfoButtonText    = "🎾 О кэмпе"
+	campDetailsButtonText = "📋 Подробнее"
+	operatorButtonText    = "👤 Связаться с оператором"
+	menuButtonText        = "⬅️ Главное меню"
+	takeButtonText        = "✅ Взять заявку"
+	closeButtonText       = "❌ Закрыть заявку"
 
 	maxQuestionLength = 1000
 )
@@ -49,6 +54,10 @@ const (
 	ticketClosedMessage     = "Диалог с оператором завершён. Если появится новый вопрос, просто напишите его."
 	textOnlyMessage         = "Пока я понимаю только текстовые сообщения. Опишите, пожалуйста, вопрос словами."
 	textOnlyOperatorMessage = "Пока поддерживается только текст, поэтому я не смог передать это оператору."
+	aiPromptMessage         = "Можете задать вопрос прямо здесь — наш ИИ попробует ответить по информации о кэмпах."
+	sessionClosedMessage    = "Сессия завершена. Чтобы начать новую, отправьте любое сообщение или команду /start."
+	clientExitedNotice      = "Клиент завершил сессию командой /exit."
+	clientRestartedNotice   = "Клиент начал новую сессию командой /start."
 )
 
 // Operator group messages.
@@ -72,6 +81,12 @@ func (a *app) operatorsEnabled() bool {
 	return a.managerChatID != 0
 }
 
+func (a *app) ensureSession(chatID int64) {
+	if !a.store.sessionActive(chatID) {
+		a.store.startSession(chatID)
+	}
+}
+
 func (a *app) startHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
 	if update == nil || update.Message == nil {
 		return
@@ -80,12 +95,40 @@ func (a *app) startHandler(ctx context.Context, telegramBot *bot.Bot, update *mo
 		return
 	}
 
-	a.store.update(update.Message.Chat.ID, func(state *chatState) { state.stage = stageIdle })
+	a.finishSession(ctx, telegramBot, update.Message.Chat.ID, clientRestartedNotice)
+	a.store.startSession(update.Message.Chat.ID)
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      update.Message.Chat.ID,
 		Text:        startMessage,
 		ReplyMarkup: mainMenuKeyboard(),
 	})
+}
+
+func (a *app) exitHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
+	if update == nil || update.Message == nil {
+		return
+	}
+	if a.operatorsEnabled() && update.Message.Chat.ID == a.managerChatID {
+		return
+	}
+
+	a.finishSession(ctx, telegramBot, update.Message.Chat.ID, clientExitedNotice)
+	sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: sessionClosedMessage})
+}
+
+func (a *app) finishSession(ctx context.Context, telegramBot *bot.Bot, chatID int64, operatorNotice string) {
+	current, hadTicket := a.store.endSession(chatID)
+	if !hadTicket {
+		return
+	}
+	a.updateCard(ctx, telegramBot, current, nil)
+	if current.cardMessageID != 0 {
+		sendMessage(ctx, telegramBot, &bot.SendMessageParams{
+			ChatID:          a.managerChatID,
+			Text:            operatorNotice,
+			ReplyParameters: &models.ReplyParameters{MessageID: current.cardMessageID, AllowSendingWithoutReply: true},
+		})
+	}
 }
 
 func (a *app) chatIDHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
@@ -105,6 +148,7 @@ func (a *app) menuHandler(ctx context.Context, telegramBot *bot.Bot, update *mod
 		return
 	}
 
+	a.ensureSession(chatID)
 	a.store.update(chatID, func(state *chatState) { state.stage = stageIdle })
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      chatID,
@@ -130,17 +174,58 @@ func (a *app) campHandler(ctx context.Context, telegramBot *bot.Bot, update *mod
 		return
 	}
 
+	a.ensureSession(chatID)
 	a.store.selectCamp(chatID, selected.id)
+	title := campTitle(a.knowledge, selected.id)
+	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        fmt.Sprintf("Вы выбрали «%s».\n\n%s", title, aiPromptMessage),
+		ReplyMarkup: selectedCampKeyboard(selected.id),
+	})
+}
+
+func (a *app) campInfoHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
+	chatID, ok := clientCallbackChat(ctx, telegramBot, update)
+	if !ok {
+		return
+	}
+	campID := strings.TrimPrefix(update.CallbackQuery.Data, campInfoCallbackPrefix)
+	selected, ok := campByID(campID)
+	if !ok {
+		return
+	}
+
+	a.ensureSession(chatID)
+	a.store.selectCamp(chatID, campID)
 	summary, ok := campSummary(a.knowledge, selected)
 	if !ok {
 		summary = campUnavailableMessage
 	}
-
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      chatID,
-		Text:        summary,
-		ReplyMarkup: campKeyboard(),
+		Text:        summary + "\n\n" + aiPromptMessage,
+		ReplyMarkup: campInfoKeyboard(campID),
 	})
+}
+
+func (a *app) campDetailsHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
+	chatID, ok := clientCallbackChat(ctx, telegramBot, update)
+	if !ok {
+		return
+	}
+	campID := strings.TrimPrefix(update.CallbackQuery.Data, campDetailsCallbackPrefix)
+	selected, ok := campByID(campID)
+	if !ok {
+		return
+	}
+
+	a.ensureSession(chatID)
+	a.store.selectCamp(chatID, campID)
+	details, ok := campDetails(a.knowledge, selected)
+	if !ok {
+		details = campUnavailableMessage
+	}
+	a.sendLongClientMessage(ctx, telegramBot, chatID, details+"\n\n"+aiPromptMessage, selectedCampKeyboard(campID))
 }
 
 func (a *app) aboutHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
@@ -149,6 +234,7 @@ func (a *app) aboutHandler(ctx context.Context, telegramBot *bot.Bot, update *mo
 		return
 	}
 
+	a.ensureSession(chatID)
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        aboutMessage,
@@ -162,8 +248,13 @@ func (a *app) askHandler(ctx context.Context, telegramBot *bot.Bot, update *mode
 		return
 	}
 
+	a.ensureSession(chatID)
 	a.store.update(chatID, func(state *chatState) { state.stage = stageAwaitingQuestion })
-	sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: askPromptMessage})
+	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        askPromptMessage + "\n\n" + aiPromptMessage,
+		ReplyMarkup: operatorAndMenuKeyboard(),
+	})
 }
 
 func (a *app) operatorHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
@@ -172,6 +263,7 @@ func (a *app) operatorHandler(ctx context.Context, telegramBot *bot.Bot, update 
 		return
 	}
 
+	a.ensureSession(chatID)
 	if _, active := a.store.activeTicket(chatID); active {
 		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorBusyMessage})
 		return
@@ -180,7 +272,7 @@ func (a *app) operatorHandler(ctx context.Context, telegramBot *bot.Bot, update 
 	state := a.store.chat(chatID)
 	if state.lastQuestion == "" {
 		a.store.update(chatID, func(state *chatState) { state.stage = stageAwaitingOperatorQuestion })
-		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorPromptMessage})
+		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorPromptMessage, ReplyMarkup: operatorAndMenuKeyboard()})
 		return
 	}
 
@@ -201,6 +293,9 @@ func (a *app) messageHandler(ctx context.Context, telegramBot *bot.Bot, update *
 
 	text := strings.TrimSpace(message.Text)
 	if text == "" {
+		if !hasUnsupportedContent(message) {
+			return
+		}
 		notice := textOnlyMessage
 		if _, active := a.store.activeTicket(message.Chat.ID); active {
 			notice = textOnlyOperatorMessage
@@ -214,12 +309,23 @@ func (a *app) messageHandler(ctx context.Context, telegramBot *bot.Bot, update *
 		return
 	}
 
+	if !a.store.sessionActive(message.Chat.ID) {
+		a.store.startSession(message.Chat.ID)
+		sendMessage(ctx, telegramBot, &bot.SendMessageParams{
+			ChatID:      message.Chat.ID,
+			Text:        startMessage,
+			ReplyMarkup: mainMenuKeyboard(),
+		})
+	}
+
 	if current, active := a.store.activeTicket(message.Chat.ID); active {
+		a.store.appendHistory(message.Chat.ID, sessionRoleUser, text)
 		a.relayToOperators(ctx, telegramBot, current, text)
 		return
 	}
 
 	if a.store.chat(message.Chat.ID).stage == stageAwaitingOperatorQuestion {
+		a.store.appendHistory(message.Chat.ID, sessionRoleUser, text)
 		a.openTicket(ctx, telegramBot, message.Chat.ID, message.From, text, "")
 		return
 	}
@@ -229,30 +335,49 @@ func (a *app) messageHandler(ctx context.Context, telegramBot *bot.Bot, update *
 
 // answerQuestion asks the AI or escalates to an operator.
 func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID int64, from *models.User, question string) {
+	state := a.store.chat(chatID)
+	history := state.history
+	a.store.appendHistory(chatID, sessionRoleUser, question)
+
 	switch planQuestion(question, a.ai.enabled(), a.operatorsEnabled()) {
 	case planAI:
 	case planOperator:
+		if !requiresOperator(question) && a.sendLocalFallback(ctx, telegramBot, chatID, question, state.campID) {
+			return
+		}
 		a.openTicket(ctx, telegramBot, chatID, from, question, "")
 		return
 	case planUnavailable:
+		if a.sendLocalFallback(ctx, telegramBot, chatID, question, state.campID) {
+			return
+		}
+		a.store.appendHistory(chatID, sessionRoleAssistant, operatorsDownMessage)
 		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorsDownMessage})
 		return
 	}
 
-	selectedCamp := campTitle(a.knowledge, a.store.chat(chatID).campID)
-	decision, err := a.ai.ask(ctx, a.knowledge, selectedCamp, question)
+	selectedCamp := campTitle(a.knowledge, state.campID)
+	decision, err := a.ai.ask(ctx, a.knowledge, selectedCamp, history, question)
 	if err != nil {
 		log.Printf("ask OpenRouter: %v", err)
+		if a.sendLocalFallback(ctx, telegramBot, chatID, question, state.campID) {
+			return
+		}
+		params := aiFailureResponse(chatID, a.operatorsEnabled())
 		a.store.update(chatID, func(state *chatState) {
 			state.stage = stageIdle
 			state.lastQuestion = question
 			state.lastAnswer = ""
 		})
-		sendMessage(ctx, telegramBot, aiFailureResponse(chatID, a.operatorsEnabled()))
+		a.store.appendHistory(chatID, sessionRoleAssistant, params.Text)
+		sendMessage(ctx, telegramBot, params)
 		return
 	}
 
 	if decision.Action == actionHandoff {
+		if a.sendLocalFallback(ctx, telegramBot, chatID, question, state.campID) {
+			return
+		}
 		a.openTicket(ctx, telegramBot, chatID, from, question, "")
 		return
 	}
@@ -262,6 +387,7 @@ func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID i
 		state.lastQuestion = question
 		state.lastAnswer = decision.Message
 	})
+	a.store.appendHistory(chatID, sessionRoleAssistant, decision.Message)
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        decision.Message,
@@ -277,12 +403,14 @@ func (a *app) openTicket(ctx context.Context, telegramBot *bot.Bot, chatID int64
 			state.lastQuestion = question
 			state.lastAnswer = aiAnswer
 		})
+		a.store.appendHistory(chatID, sessionRoleAssistant, operatorsDownMessage)
 		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorsDownMessage})
 		return
 	}
 
 	created, createdNew := a.store.createTicket(chatID, campTitle(a.knowledge, a.store.chat(chatID).campID), question, aiAnswer)
 	if !createdNew {
+		a.store.appendHistory(chatID, sessionRoleAssistant, operatorBusyMessage)
 		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorBusyMessage})
 		return
 	}
@@ -296,11 +424,14 @@ func (a *app) openTicket(ctx context.Context, telegramBot *bot.Bot, chatID int64
 	if err != nil {
 		logTelegramError("send ticket to operators", err)
 		a.store.dropTicket(created.id)
+		a.store.appendHistory(chatID, sessionRoleAssistant, operatorsDownMessage)
 		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorsDownMessage})
 		return
 	}
 
 	a.store.registerCard(created.id, sent.ID, card)
+	a.sendTicketHistory(ctx, telegramBot, created, sent.ID)
+	a.store.appendHistory(chatID, sessionRoleAssistant, handoffDoneMessage)
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: handoffDoneMessage})
 }
 
@@ -360,6 +491,7 @@ func (a *app) operatorMessageHandler(ctx context.Context, telegramBot *bot.Bot, 
 	}
 
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: current.clientChatID, Text: message.Text})
+	a.store.appendHistory(current.clientChatID, sessionRoleOperator, message.Text)
 }
 
 func (a *app) takeTicketHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
@@ -395,6 +527,7 @@ func (a *app) closeTicketHandler(ctx context.Context, telegramBot *bot.Bot, upda
 	case closeDone:
 		answerCallback(ctx, telegramBot, callback.ID, "")
 		a.updateCard(ctx, telegramBot, current, nil)
+		a.store.appendHistory(current.clientChatID, sessionRoleAssistant, ticketClosedMessage)
 		sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 			ChatID:      current.clientChatID,
 			Text:        ticketClosedMessage,
@@ -445,6 +578,174 @@ func (a *app) updateCard(ctx context.Context, telegramBot *bot.Bot, current tick
 	}
 }
 
+type localFallbackHint struct {
+	campID string
+	topic  string
+}
+
+func matchLocalFallback(text, selectedCampID string) (localFallbackHint, bool) {
+	text = strings.ToLower(text)
+	hint := localFallbackHint{campID: selectedCampID}
+	campMentioned := false
+	for _, candidate := range []struct {
+		campID  string
+		aliases []string
+	}{
+		{campID: "tsinandali", aliases: []string{"цинандал", "ценандал", "tsinandali"}},
+		{campID: "tbilisi", aliases: []string{"тбилис", "tbilisi"}},
+		{campID: "cape_town", aliases: []string{"кейптаун", "кейп таун", "cape town", "capetown"}},
+	} {
+		for _, alias := range candidate.aliases {
+			if strings.Contains(text, alias) {
+				hint.campID = candidate.campID
+				campMentioned = true
+				break
+			}
+		}
+		if campMentioned {
+			break
+		}
+	}
+
+	for _, candidate := range []struct {
+		topic   string
+		aliases []string
+	}{
+		{topic: "программа", aliases: []string{"программ", "расписан"}},
+		{topic: "тренировки", aliases: []string{"тренир", "теннис"}},
+		{topic: "проживание", aliases: []string{"прожив", "отел"}},
+		{topic: "даты", aliases: []string{"когда"}},
+		{topic: "стоимость", aliases: []string{"стоим", "ценник"}},
+	} {
+		for _, alias := range candidate.aliases {
+			if strings.Contains(text, alias) {
+				hint.topic = candidate.topic
+				break
+			}
+		}
+		if hint.topic != "" {
+			break
+		}
+	}
+	if hint.topic == "" && containsWord(text, "дата", "даты", "дату", "дате", "датой", "датам", "датах", "датами") {
+		hint.topic = "даты"
+	}
+	if hint.topic == "" && containsWord(text, "цена", "цены", "цену", "цене", "ценой") {
+		hint.topic = "стоимость"
+	}
+	return hint, campMentioned || hint.topic != ""
+}
+
+func containsWord(text string, variants ...string) bool {
+	words := strings.FieldsFunc(text, func(char rune) bool {
+		return !unicode.IsLetter(char) && !unicode.IsDigit(char)
+	})
+	for _, word := range words {
+		for _, variant := range variants {
+			if word == variant {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (a *app) sendLocalFallback(ctx context.Context, telegramBot *bot.Bot, chatID int64, question, selectedCampID string) bool {
+	hint, ok := matchLocalFallback(question, selectedCampID)
+	if !ok {
+		return false
+	}
+
+	text := "Похоже, вас интересует информация о кэмпах. Выберите кэмп в главном меню."
+	var keyboard models.ReplyMarkup = mainMenuKeyboard()
+	if hint.campID != "" {
+		title := campTitle(a.knowledge, hint.campID)
+		text = fmt.Sprintf("Если вы имели в виду кэмп «%s» или хотите получить информацию о нём, нажмите «О кэмпе».", title)
+		if hint.topic != "" {
+			text = fmt.Sprintf("Похоже, вас интересует тема «%s» кэмпа «%s». Нажмите «О кэмпе», чтобы посмотреть проверенную информацию.", hint.topic, title)
+		}
+		keyboard = selectedCampKeyboard(hint.campID)
+	}
+
+	a.store.update(chatID, func(state *chatState) {
+		state.stage = stageIdle
+		state.lastQuestion = question
+		state.lastAnswer = text
+	})
+	a.store.appendHistory(chatID, sessionRoleAssistant, text)
+	sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: text, ReplyMarkup: keyboard})
+	return true
+}
+
+func formatSessionHistory(history []sessionMessage) string {
+	lines := make([]string, 0, len(history))
+	for _, entry := range history {
+		label := "Бот"
+		switch entry.role {
+		case sessionRoleUser:
+			label = "Клиент"
+		case sessionRoleOperator:
+			label = "Оператор"
+		case sessionRoleAssistant:
+		}
+		lines = append(lines, label+": "+entry.text)
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func splitLongText(text string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	runes := []rune(strings.TrimSpace(text))
+	parts := make([]string, 0, len(runes)/limit+1)
+	for len(runes) > limit {
+		cut := limit
+		for probe := limit; probe > limit/2; probe-- {
+			if runes[probe] == '\n' {
+				cut = probe
+				break
+			}
+		}
+		parts = append(parts, strings.TrimSpace(string(runes[:cut])))
+		runes = runes[cut:]
+	}
+	if tail := strings.TrimSpace(string(runes)); tail != "" {
+		parts = append(parts, tail)
+	}
+	return parts
+}
+
+func (a *app) sendLongClientMessage(ctx context.Context, telegramBot *bot.Bot, chatID int64, text string, keyboard models.ReplyMarkup) {
+	parts := splitLongText(text, 3500)
+	for index, part := range parts {
+		params := &bot.SendMessageParams{ChatID: chatID, Text: part}
+		if index == len(parts)-1 {
+			params.ReplyMarkup = keyboard
+		}
+		sendMessage(ctx, telegramBot, params)
+	}
+}
+
+func (a *app) sendTicketHistory(ctx context.Context, telegramBot *bot.Bot, current ticket, cardMessageID int) {
+	transcript := formatSessionHistory(current.history)
+	if transcript == "" {
+		return
+	}
+	for _, part := range splitLongText("История сессии:\n\n"+transcript, 3500) {
+		sent, err := telegramBot.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:          a.managerChatID,
+			Text:            part,
+			ReplyParameters: &models.ReplyParameters{MessageID: cardMessageID, AllowSendingWithoutReply: true},
+		})
+		if err != nil {
+			logTelegramError("send session history", err)
+			return
+		}
+		a.store.linkGroupMessage(current.id, sent.ID)
+	}
+}
+
 type questionPlan int
 
 const (
@@ -452,6 +753,30 @@ const (
 	planOperator
 	planUnavailable
 )
+
+func hasUnsupportedContent(message *models.Message) bool {
+	return message.Animation != nil ||
+		message.Audio != nil ||
+		message.Document != nil ||
+		message.PaidMedia != nil ||
+		len(message.Photo) > 0 ||
+		message.Sticker != nil ||
+		message.Story != nil ||
+		message.Video != nil ||
+		message.VideoNote != nil ||
+		message.Voice != nil ||
+		message.Checklist != nil ||
+		message.Contact != nil ||
+		message.Dice != nil ||
+		message.Game != nil ||
+		message.Poll != nil ||
+		message.Venue != nil ||
+		message.Location != nil ||
+		message.UsersShared != nil ||
+		message.ChatShared != nil ||
+		message.WebAppData != nil ||
+		message.LivePhoto != nil
+}
 
 func questionExceedsLimit(question string) bool {
 	return utf8.RuneCountInString(question) > maxQuestionLength
@@ -619,9 +944,17 @@ func mainMenuKeyboard() *models.InlineKeyboardMarkup {
 	})}
 }
 
-func campKeyboard() *models.InlineKeyboardMarkup {
+func selectedCampKeyboard(campID string) *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		{{Text: askButtonText, CallbackData: askCallbackData}},
+		{{Text: campInfoButtonText, CallbackData: campInfoCallbackPrefix + campID}},
+		{{Text: operatorButtonText, CallbackData: operatorCallbackData}},
+		{{Text: menuButtonText, CallbackData: menuCallbackData}},
+	}}
+}
+
+func campInfoKeyboard(campID string) *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: campDetailsButtonText, CallbackData: campDetailsCallbackPrefix + campID}},
 		{{Text: operatorButtonText, CallbackData: operatorCallbackData}},
 		{{Text: menuButtonText, CallbackData: menuCallbackData}},
 	}}
@@ -630,6 +963,7 @@ func campKeyboard() *models.InlineKeyboardMarkup {
 func operatorKeyboard() *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		{{Text: operatorButtonText, CallbackData: operatorCallbackData}},
+		{{Text: menuButtonText, CallbackData: menuCallbackData}},
 	}}
 }
 

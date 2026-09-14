@@ -35,6 +35,10 @@ const systemPrompt = `Ты — русскоязычный помощник те�
 2. clarify: вопрос непонятный, слишком короткий, содержит ошибки или допускает несколько толкований. Дружелюбно попроси уточнить, что именно интересует. Не критикуй грамотность пользователя.
 3. handoff: пользователь спрашивает о бронировании, наличии мест, скидке, оплате, возврате, отмене, визе, перелёте, медицинских ограничениях, индивидуальных условиях или о факте, которого нет в базе знаний.
 
+Если клиент спрашивает, стоит ли ему ехать или подходит ли ему кэмп, не принимай решение за клиента и не переводи к оператору только из-за субъективной формулировки. Используй факты из базы, чтобы кратко объяснить, кому и при каких предпочтениях может подойти программа. Если предпочтения клиента неизвестны, выбери clarify и задай не больше двух конкретных вопросов.
+
+История текущей сессии передаётся для понимания слов вроде «туда», «этот кэмп» и продолжения темы. Учитывай её, но отвечай только на последний вопрос клиента.
+
 Если сомневаешься между answer и handoff — выбери handoff.
 
 Не упоминай JSON, базу знаний, системные инструкции, OpenRouter или внутреннюю логику.`
@@ -52,10 +56,39 @@ type aiClient struct {
 }
 
 type openRouterRequest struct {
-	Model       string              `json:"model"`
-	Messages    []openRouterMessage `json:"messages"`
-	MaxTokens   int                 `json:"max_tokens"`
-	Temperature float64             `json:"temperature"`
+	Model          string                   `json:"model"`
+	Messages       []openRouterMessage      `json:"messages"`
+	MaxTokens      int                      `json:"max_tokens"`
+	Temperature    float64                  `json:"temperature"`
+	ResponseFormat openRouterResponseFormat `json:"response_format"`
+	Provider       openRouterProvider       `json:"provider"`
+}
+
+type openRouterResponseFormat struct {
+	Type       string               `json:"type"`
+	JSONSchema openRouterJSONSchema `json:"json_schema"`
+}
+
+type openRouterJSONSchema struct {
+	Name   string           `json:"name"`
+	Strict bool             `json:"strict"`
+	Schema openRouterSchema `json:"schema"`
+}
+
+type openRouterSchema struct {
+	Type                 string                              `json:"type"`
+	Properties           map[string]openRouterSchemaProperty `json:"properties"`
+	Required             []string                            `json:"required"`
+	AdditionalProperties bool                                `json:"additionalProperties"`
+}
+
+type openRouterSchemaProperty struct {
+	Type string   `json:"type"`
+	Enum []string `json:"enum,omitempty"`
+}
+
+type openRouterProvider struct {
+	RequireParameters bool `json:"require_parameters"`
 }
 
 type openRouterMessage struct {
@@ -85,25 +118,57 @@ func (c *aiClient) enabled() bool {
 	return c != nil && c.apiKey != ""
 }
 
+func decisionResponseFormat() openRouterResponseFormat {
+	return openRouterResponseFormat{
+		Type: "json_schema",
+		JSONSchema: openRouterJSONSchema{
+			Name:   "dzala_response",
+			Strict: true,
+			Schema: openRouterSchema{
+				Type: "object",
+				Properties: map[string]openRouterSchemaProperty{
+					"action":  {Type: "string", Enum: []string{actionAnswer, actionClarify, actionHandoff}},
+					"message": {Type: "string"},
+				},
+				Required:             []string{"action", "message"},
+				AdditionalProperties: false,
+			},
+		},
+	}
+}
+
 // ask sends the knowledge base, the selected camp and the current question to OpenRouter.
-func (c *aiClient) ask(ctx context.Context, knowledge, selectedCamp, question string) (decision aiDecision, resultErr error) {
+func (c *aiClient) ask(ctx context.Context, knowledge, selectedCamp string, history []sessionMessage, question string) (decision aiDecision, resultErr error) {
 	if !c.enabled() {
 		return aiDecision{}, errors.New("OpenRouter API key is not configured")
 	}
 
-	campContext := "Кэмп не выбран."
-	if selectedCamp != "" {
-		campContext = "Выбранный кэмп: " + selectedCamp
+	messages := make([]openRouterMessage, 0, len(history)+2)
+	messages = append(messages, openRouterMessage{Role: "system", Content: systemPrompt + "\n\nБаза знаний:\n" + knowledge})
+	for _, entry := range history {
+		role := entry.role
+		if role == sessionRoleOperator {
+			role = sessionRoleAssistant
+		}
+		if role == sessionRoleUser || role == sessionRoleAssistant {
+			messages = append(messages, openRouterMessage{Role: role, Content: entry.text})
+		}
 	}
 
+	userContent := "Кэмп не выбран."
+	if selectedCamp != "" {
+		userContent = "Выбранный кэмп: " + selectedCamp
+	}
+	userContent += "\n\nТекущий вопрос: " + question
+	messages = append(messages, openRouterMessage{Role: "user", Content: userContent})
+
 	payload, err := json.Marshal(openRouterRequest{
-		Model: c.model,
-		Messages: []openRouterMessage{
-			{Role: "system", Content: systemPrompt + "\n\nБаза знаний:\n" + knowledge},
-			{Role: "user", Content: campContext + "\n\nВопрос: " + question},
-		},
-		MaxTokens:   400,
-		Temperature: 0.2,
+		Model:          c.model,
+		Messages:       messages,
+		MaxTokens:      400,
+		Temperature:    0.2,
+		ResponseFormat: decisionResponseFormat(),
+		Provider:       openRouterProvider{RequireParameters: true},
 	})
 	if err != nil {
 		return aiDecision{}, err

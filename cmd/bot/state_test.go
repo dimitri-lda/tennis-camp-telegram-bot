@@ -30,6 +30,38 @@ func TestSelectCampRemembersChoice(t *testing.T) {
 	}
 }
 
+func TestSessionLifecycleKeepsCompleteHistory(t *testing.T) {
+	state := newStore()
+	state.startSession(7)
+	state.appendHistory(7, sessionRoleUser, "Первый вопрос")
+	state.appendHistory(7, sessionRoleAssistant, "Первый ответ")
+	state.appendHistory(7, sessionRoleUser, "Второй вопрос")
+
+	history := state.sessionHistory(7)
+	if !state.sessionActive(7) {
+		t.Fatal("sessionActive() = false, want true")
+	}
+	if len(history) != 3 || history[0].text != "Первый вопрос" || history[2].text != "Второй вопрос" {
+		t.Errorf("sessionHistory() = %+v, want all three messages", history)
+	}
+	history[0].text = "изменено"
+	if state.sessionHistory(7)[0].text != "Первый вопрос" {
+		t.Error("sessionHistory() returned mutable store data")
+	}
+
+	created, ok := state.createTicket(7, "Тбилиси, Грузия", "Второй вопрос", "")
+	if !ok || len(created.history) != 3 {
+		t.Errorf("createTicket() history = %+v, want complete session history", created.history)
+	}
+	closed, hadTicket := state.endSession(7)
+	if !hadTicket || closed.status != ticketClosed {
+		t.Errorf("endSession() = %+v, %t, want a closed ticket", closed, hadTicket)
+	}
+	if state.sessionActive(7) || len(state.sessionHistory(7)) != 0 {
+		t.Error("endSession() did not clear the client session")
+	}
+}
+
 func TestCreateTicketIsAtomicPerClient(t *testing.T) {
 	state := newStore()
 	const attempts = 32

@@ -72,7 +72,7 @@ func TestParseAIDecisionRejectsBadAnswers(t *testing.T) {
 	}
 }
 
-func TestAskSendsKnowledgeAndCamp(t *testing.T) {
+func TestAskSendsKnowledgeCampPreviousTurnAndSchema(t *testing.T) {
 	var request openRouterRequest
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, reader *http.Request) {
 		body, err := io.ReadAll(reader.Body)
@@ -90,7 +90,13 @@ func TestAskSendsKnowledgeAndCamp(t *testing.T) {
 	client := newAIClient("test-key", "vendor/test-model")
 	client.endpoint = server.URL
 
-	decision, err := client.ask(context.Background(), "База знаний про кэмпы", "Тбилиси, Грузия", "Сколько тенниса в день?")
+	history := []sessionMessage{
+		{role: sessionRoleUser, text: "Что такое кэмп в Тбилиси?"},
+		{role: sessionRoleAssistant, text: "Это теннисный кэмп с тренировками и проживанием."},
+		{role: sessionRoleUser, text: "А какие там тренировки?"},
+		{role: sessionRoleAssistant, text: "От 3 до 5 часов тенниса ежедневно."},
+	}
+	decision, err := client.ask(context.Background(), "База знаний про кэмпы", "Тбилиси, Грузия", history, "Стоит ли мне туда ехать?")
 	if err != nil {
 		t.Fatalf("ask() error = %v", err)
 	}
@@ -100,14 +106,34 @@ func TestAskSendsKnowledgeAndCamp(t *testing.T) {
 	if request.Model != "vendor/test-model" {
 		t.Errorf("model = %q, want %q", request.Model, "vendor/test-model")
 	}
-	if len(request.Messages) != 2 {
-		t.Fatalf("messages = %d, want 2", len(request.Messages))
+	if len(request.Messages) != 6 {
+		t.Fatalf("messages = %d, want system, four history messages and current question", len(request.Messages))
 	}
 	if !strings.Contains(request.Messages[0].Content, "База знаний про кэмпы") {
 		t.Error("system message must carry the knowledge base")
 	}
-	if !strings.Contains(request.Messages[1].Content, "Тбилиси, Грузия") {
-		t.Error("user message must carry the selected camp")
+	for index, want := range []openRouterMessage{
+		{Role: "user", Content: "Что такое кэмп в Тбилиси?"},
+		{Role: "assistant", Content: "Это теннисный кэмп с тренировками и проживанием."},
+		{Role: "user", Content: "А какие там тренировки?"},
+		{Role: "assistant", Content: "От 3 до 5 часов тенниса ежедневно."},
+	} {
+		if request.Messages[index+1] != want {
+			t.Errorf("history message %d = %+v, want %+v", index, request.Messages[index+1], want)
+		}
+	}
+	if !strings.Contains(request.Messages[5].Content, "Тбилиси, Грузия") || !strings.Contains(request.Messages[5].Content, "Стоит ли мне туда ехать?") {
+		t.Errorf("current user message = %q, want camp and current question", request.Messages[5].Content)
+	}
+	if request.ResponseFormat.Type != "json_schema" || !request.ResponseFormat.JSONSchema.Strict {
+		t.Errorf("response format = %+v, want strict JSON schema", request.ResponseFormat)
+	}
+	if !request.Provider.RequireParameters {
+		t.Error("provider.require_parameters = false, want true")
+	}
+	action := request.ResponseFormat.JSONSchema.Schema.Properties["action"]
+	if strings.Join(action.Enum, ",") != "answer,clarify,handoff" {
+		t.Errorf("action enum = %v, want answer, clarify, handoff", action.Enum)
 	}
 }
 
@@ -120,7 +146,7 @@ func TestAskFailsOnServerError(t *testing.T) {
 	client := newAIClient("test-key", "")
 	client.endpoint = server.URL
 
-	if _, err := client.ask(context.Background(), "knowledge", "", "вопрос"); err == nil {
+	if _, err := client.ask(context.Background(), "knowledge", "", nil, "вопрос"); err == nil {
 		t.Error("ask() error = nil, want an error for HTTP 500")
 	}
 }
@@ -133,7 +159,7 @@ func TestAIClientWithoutAPIKeyIsDisabled(t *testing.T) {
 	if client.model != defaultAIModel {
 		t.Errorf("model = %q, want the default %q", client.model, defaultAIModel)
 	}
-	if _, err := client.ask(context.Background(), "knowledge", "", "вопрос"); err == nil {
+	if _, err := client.ask(context.Background(), "knowledge", "", nil, "вопрос"); err == nil {
 		t.Error("ask() error = nil, want an error without OPENROUTER_API_KEY")
 	}
 }

@@ -82,6 +82,25 @@ func TestCampSummaryUsesKnowledgeBase(t *testing.T) {
 	}
 }
 
+func TestCampDetailsUsesFullKnowledgeSection(t *testing.T) {
+	selected, _ := campByID("tbilisi")
+	details, ok := campDetails(knowledgeFixture, selected)
+	if !ok {
+		t.Fatal("campDetails() ok = false, want true")
+	}
+	for _, want := range []string{"Краткое описание", "Кэмп в Тбилиси", "Даты", "18.10–25.10"} {
+		if !strings.Contains(details, want) {
+			t.Errorf("campDetails() = %q, want it to contain %q", details, want)
+		}
+	}
+	if strings.Contains(details, "Кейптаун") {
+		t.Error("campDetails() must not leak another camp section")
+	}
+	if strings.Contains(details, "####") || strings.Contains(details, "| ---") {
+		t.Error("campDetails() must be readable without Telegram Markdown parsing")
+	}
+}
+
 func TestCampSummaryMissingSection(t *testing.T) {
 	if _, ok := campSummary("# База знаний\n", camp{id: "tbilisi", heading: "Тбилиси"}); ok {
 		t.Error("campSummary() ok = true, want false when the section is missing")
