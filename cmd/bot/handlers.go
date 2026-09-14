@@ -342,7 +342,7 @@ func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID i
 	switch planQuestion(question, a.ai.enabled(), a.operatorsEnabled()) {
 	case planAI:
 	case planOperator:
-		if !requiresOperator(question) && a.sendLocalFallback(ctx, telegramBot, chatID, question, state.campID) {
+		if !a.ai.enabled() && a.sendLocalFallback(ctx, telegramBot, chatID, question, state.campID) {
 			return
 		}
 		a.openTicket(ctx, telegramBot, chatID, from, question, "")
@@ -375,9 +375,6 @@ func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID i
 	}
 
 	if decision.Action == actionHandoff {
-		if a.sendLocalFallback(ctx, telegramBot, chatID, question, state.campID) {
-			return
-		}
 		a.openTicket(ctx, telegramBot, chatID, from, question, "")
 		return
 	}
@@ -650,21 +647,33 @@ func containsWord(text string, variants ...string) bool {
 	return false
 }
 
-func (a *app) sendLocalFallback(ctx context.Context, telegramBot *bot.Bot, chatID int64, question, selectedCampID string) bool {
-	hint, ok := matchLocalFallback(question, selectedCampID)
-	if !ok {
-		return false
+// localFallbackReply builds a knowledge-based hint when the AI cannot answer.
+// Topics that only an operator may answer are never replaced by a camp card.
+func localFallbackReply(knowledge, question, selectedCampID string) (string, *models.InlineKeyboardMarkup, bool) {
+	if requiresOperator(question) {
+		return "", nil, false
 	}
 
-	text := "Похоже, вас интересует информация о кэмпах. Выберите кэмп в главном меню."
-	var keyboard models.ReplyMarkup = mainMenuKeyboard()
-	if hint.campID != "" {
-		title := campTitle(a.knowledge, hint.campID)
-		text = fmt.Sprintf("Если вы имели в виду кэмп «%s» или хотите получить информацию о нём, нажмите «О кэмпе».", title)
-		if hint.topic != "" {
-			text = fmt.Sprintf("Похоже, вас интересует тема «%s» кэмпа «%s». Нажмите «О кэмпе», чтобы посмотреть проверенную информацию.", hint.topic, title)
-		}
-		keyboard = selectedCampKeyboard(hint.campID)
+	hint, matched := matchLocalFallback(question, selectedCampID)
+	if !matched && hint.campID == "" {
+		return "", nil, false
+	}
+	if hint.campID == "" {
+		return "Похоже, вас интересует информация о кэмпах. Выберите кэмп в главном меню.", mainMenuKeyboard(), true
+	}
+
+	title := campTitle(knowledge, hint.campID)
+	text := fmt.Sprintf("Если вы имели в виду кэмп «%s» или хотите получить информацию о нём, нажмите «О кэмпе».", title)
+	if hint.topic != "" {
+		text = fmt.Sprintf("Похоже, вас интересует тема «%s» кэмпа «%s». Нажмите «О кэмпе», чтобы посмотреть проверенную информацию.", hint.topic, title)
+	}
+	return text, selectedCampKeyboard(hint.campID), true
+}
+
+func (a *app) sendLocalFallback(ctx context.Context, telegramBot *bot.Bot, chatID int64, question, selectedCampID string) bool {
+	text, keyboard, ok := localFallbackReply(a.knowledge, question, selectedCampID)
+	if !ok {
+		return false
 	}
 
 	a.store.update(chatID, func(state *chatState) {
@@ -807,11 +816,19 @@ func requiresOperator(question string) bool {
 		"брониров", "заброни", "оплат", "платеж", "платёж", "депозит", "скидк", "рассрочк",
 		"есть ли места", "свободные места", "свободно мест", "наличие мест", "остались места",
 		"возврат", "отмен", "виз", "перелёт", "перелет", "авиабилет", "билет",
-		"медицин", "травм", "аллерг", "страхов", "нестандартн",
-		"оператор", "поговорить с человеком", "менеджер",
+		"медицин", "травм", "аллерг", "страхов", "маляри", "вакцин", "привив", "лекарств",
+		"диет", "веган", "вегетари", "питан", "экипиров", "инвентар", "струн", "багаж",
+		"ранний заезд", "поздний выезд", "нестандартн", "оператор", "поговорить с человеком", "менеджер",
 	} {
 		if strings.Contains(question, trigger) {
 			return true
+		}
+	}
+	if strings.Contains(question, "ракетк") {
+		for _, trigger := range []string{"нужно", "нужна", "брать", "взять", "свою", "предостав", "выдают", "аренд"} {
+			if strings.Contains(question, trigger) {
+				return true
+			}
 		}
 	}
 	return strings.Contains(question, "индивидуальн") &&

@@ -128,4 +128,16 @@ func TestRepositoryKnowledgeCoversEveryCamp(t *testing.T) {
 			t.Errorf("campSummary() ok = false for camp %q", item.id)
 		}
 	}
+	for _, topic := range []string{
+		"Есть ли комары и другие насекомые",
+		"Есть ли комары и риск малярии",
+		"Валюта, карты и наличные",
+		"Розетки и электричество",
+		"Питание, аллергии и диеты",
+		"Визы, паспорт, страховка и перелёт",
+	} {
+		if !strings.Contains(knowledge, topic) {
+			t.Errorf("knowledge base does not cover %q", topic)
+		}
+	}
 }

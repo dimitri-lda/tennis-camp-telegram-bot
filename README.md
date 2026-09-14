@@ -18,7 +18,7 @@ operator when the knowledge base is not allowed to answer.
    | `TELEGRAM_BOT_TOKEN` | yes | Bot token from @BotFather. |
    | `TELEGRAM_MANAGER_CHAT_ID` | no | ID of the private operator group. Without it the operator handoff is disabled. |
    | `OPENROUTER_API_KEY` | no | OpenRouter key. Without it every question goes to the operators. |
-   | `OPENROUTER_MODEL` | no | Model name, `openrouter/free` by default. |
+   | `OPENROUTER_MODEL` | no | Model name, `openrouter/free` by default. Prefer a fixed model, see below. |
    | `KNOWLEDGE_FILE` | no | Knowledge base path, `knowledge/dzala.md` by default. |
 
 3. Run the bot in polling mode from the repository root, so that the default
@@ -29,7 +29,29 @@ operator when the knowledge base is not allowed to answer.
    ```
 
 The knowledge base is read once at startup. The bot refuses to start when the
-file is missing or empty.
+file is missing or empty. It contains both confirmed Dzala camp materials and a
+separately labelled practical destination FAQ based on public sources. The bot
+must present the latter as general reference information, not a Dzala condition.
+
+## Choosing a model
+
+`openrouter/free` picks a random free model per request, so answer quality,
+latency and schema compliance vary. Set a fixed model for predictable answers:
+
+```env
+OPENROUTER_MODEL=deepseek/deepseek-v4-flash-0731
+```
+
+Other inexpensive options with reliable structured outputs are `z-ai/glm-4.7-flash`,
+`qwen/qwen3.5-flash-02-23` and `google/gemini-2.5-flash-lite`. Avoid `~vendor/model-latest`
+aliases: some of them do not support structured outputs. Paid models require credits
+on the OpenRouter account; a ChatGPT subscription does not cover API usage.
+
+The first attempt asks for a strict JSON schema and caps reasoning, because
+thinking tokens are billed as output tokens and can crowd out the JSON answer. An
+unparsable answer triggers one retry in plain JSON mode without provider
+restrictions. Failed attempts log the model that answered, so
+`ask OpenRouter: ... (model vendor/name)` identifies a misbehaving model.
 
 ## Operator group
 
@@ -78,6 +100,8 @@ messages get a short notice instead.
 
 - Dialog and ticket state is kept in memory only, so active tickets, the selected
   camp and ticket numbering are lost on restart.
+- Only the last 20 session messages are sent to the AI; operators still receive
+  the complete session transcript.
 - Production will use a webhook in a later development stage; only polling is
   implemented.
 

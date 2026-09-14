@@ -25,6 +25,11 @@ func TestRequiresOperator(t *testing.T) {
 		{question: "Есть ли индивидуальные тренировки?", want: false},
 		{question: "Нужны индивидуальные условия", want: true},
 		{question: "Доступно индивидуальное размещение?", want: true},
+		{question: "Есть ли комары в Кейптауне?", want: false},
+		{question: "Нужны ли таблетки от малярии?", want: true},
+		{question: "Какое будет питание?", want: true},
+		{question: "Нужно ли брать ракетку?", want: true},
+		{question: "Какой ракеткой мира была Натела?", want: false},
 	}
 
 	for _, test := range tests {
@@ -66,6 +71,27 @@ func TestLocalFallbackMatchesCampAndTopic(t *testing.T) {
 		if ok != test.wantOK || hint.campID != test.wantCampID || hint.topic != test.wantTopic {
 			t.Errorf("matchLocalFallback(%q) = %+v, %t, want camp=%q topic=%q ok=%t", test.question, hint, ok, test.wantCampID, test.wantTopic, test.wantOK)
 		}
+	}
+}
+
+func TestLocalFallbackReplyRules(t *testing.T) {
+	if _, _, ok := localFallbackReply(knowledgeFixture, "Хочу забронировать Тбилиси", "tbilisi"); ok {
+		t.Error("sensitive booking question must not be answered with a camp card")
+	}
+
+	text, keyboard, ok := localFallbackReply(knowledgeFixture, "В какой части планеты?", "tbilisi")
+	if !ok {
+		t.Fatal("localFallbackReply() ok = false, want a hint for the selected camp")
+	}
+	if !strings.Contains(text, "Тбилиси, Грузия") {
+		t.Errorf("text = %q, want the selected camp title", text)
+	}
+	if keyboard.InlineKeyboard[0][0].CallbackData != campInfoCallbackPrefix+"tbilisi" {
+		t.Errorf("keyboard = %+v, want the camp info button", keyboard.InlineKeyboard[0][0])
+	}
+
+	if _, _, ok := localFallbackReply(knowledgeFixture, "Совсем непонятный запрос", ""); ok {
+		t.Error("localFallbackReply() ok = true, want false without a camp or topic")
 	}
 }
 

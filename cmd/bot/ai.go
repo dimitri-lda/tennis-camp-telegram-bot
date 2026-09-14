@@ -16,6 +16,12 @@ const (
 	openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
 	defaultAIModel     = "openrouter/free"
 
+	// Free models can be slow and verbose, so keep a generous budget and a
+	// bounded history instead of the whole session.
+	aiRequestTimeout   = 90 * time.Second
+	aiMaxTokens        = 900
+	maxHistoryMessages = 20
+
 	actionAnswer  = "answer"
 	actionClarify = "clarify"
 	actionHandoff = "handoff"
@@ -23,7 +29,9 @@ const (
 
 const systemPrompt = `Ты — русскоязычный помощник теннисных кэмпов Dzala.
 
-Отвечай дружелюбно, спокойно и понятно для клиента. Используй только сведения из переданной базы знаний. Не используй внешние знания и ничего не придумывай.
+Отвечай дружелюбно, спокойно и понятно для клиента. Используй только сведения из переданной базы знаний. Не используй собственные внешние знания и ничего не придумывай.
+
+Если ответ основан на разделе «Практическая информация о направлениях», явно скажи: «По общей справочной информации о направлении». Не выдавай такую информацию за условие кэмпа Dzala. Для погоды описывай только климатический ориентир и советуй проверить прогноз перед поездкой.
 
 Верни только JSON без Markdown:
 
@@ -62,11 +70,19 @@ type openRouterRequest struct {
 	Temperature    float64                  `json:"temperature"`
 	ResponseFormat openRouterResponseFormat `json:"response_format"`
 	Provider       openRouterProvider       `json:"provider"`
+	Reasoning      *openRouterReasoning     `json:"reasoning,omitempty"`
+}
+
+// openRouterReasoning keeps thinking tokens out of the answer budget, because
+// they are billed as output tokens and can crowd out the JSON reply.
+type openRouterReasoning struct {
+	Effort  string `json:"effort,omitempty"`
+	Exclude bool   `json:"exclude,omitempty"`
 }
 
 type openRouterResponseFormat struct {
-	Type       string               `json:"type"`
-	JSONSchema openRouterJSONSchema `json:"json_schema"`
+	Type       string                `json:"type"`
+	JSONSchema *openRouterJSONSchema `json:"json_schema,omitempty"`
 }
 
 type openRouterJSONSchema struct {
@@ -97,6 +113,7 @@ type openRouterMessage struct {
 }
 
 type openRouterResponse struct {
+	Model   string `json:"model"`
 	Choices []struct {
 		Message openRouterMessage `json:"message"`
 	} `json:"choices"`
@@ -107,7 +124,7 @@ func newAIClient(apiKey, model string) *aiClient {
 		model = defaultAIModel
 	}
 	return &aiClient{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: aiRequestTimeout},
 		endpoint:   openRouterEndpoint,
 		apiKey:     strings.TrimSpace(apiKey),
 		model:      strings.TrimSpace(model),
@@ -121,7 +138,7 @@ func (c *aiClient) enabled() bool {
 func decisionResponseFormat() openRouterResponseFormat {
 	return openRouterResponseFormat{
 		Type: "json_schema",
-		JSONSchema: openRouterJSONSchema{
+		JSONSchema: &openRouterJSONSchema{
 			Name:   "dzala_response",
 			Strict: true,
 			Schema: openRouterSchema{
@@ -137,15 +154,17 @@ func decisionResponseFormat() openRouterResponseFormat {
 	}
 }
 
-// ask sends the knowledge base, the selected camp and the current question to OpenRouter.
-func (c *aiClient) ask(ctx context.Context, knowledge, selectedCamp string, history []sessionMessage, question string) (decision aiDecision, resultErr error) {
+// ask sends the knowledge base, the selected camp and the current question to
+// OpenRouter. Free models sometimes ignore the schema, so a plain JSON mode
+// retry follows an unparsable answer.
+func (c *aiClient) ask(ctx context.Context, knowledge, selectedCamp string, history []sessionMessage, question string) (aiDecision, error) {
 	if !c.enabled() {
 		return aiDecision{}, errors.New("OpenRouter API key is not configured")
 	}
 
-	messages := make([]openRouterMessage, 0, len(history)+2)
+	messages := make([]openRouterMessage, 0, maxHistoryMessages+2)
 	messages = append(messages, openRouterMessage{Role: "system", Content: systemPrompt + "\n\nБаза знаний:\n" + knowledge})
-	for _, entry := range history {
+	for _, entry := range recentHistory(history) {
 		role := entry.role
 		if role == sessionRoleOperator {
 			role = sessionRoleAssistant
@@ -162,21 +181,58 @@ func (c *aiClient) ask(ctx context.Context, knowledge, selectedCamp string, hist
 	userContent += "\n\nТекущий вопрос: " + question
 	messages = append(messages, openRouterMessage{Role: "user", Content: userContent})
 
+	var lastErr error
+	for _, attempt := range []struct {
+		format            openRouterResponseFormat
+		reasoning         *openRouterReasoning
+		requireParameters bool
+	}{
+		{format: decisionResponseFormat(), reasoning: &openRouterReasoning{Effort: "low", Exclude: true}, requireParameters: true},
+		{format: openRouterResponseFormat{Type: "json_object"}},
+	} {
+		content, model, err := c.complete(ctx, messages, attempt.format, attempt.reasoning, attempt.requireParameters)
+		if err == nil {
+			decision, parseErr := parseAIDecision(content)
+			if parseErr == nil {
+				return decision, nil
+			}
+			err = fmt.Errorf("%w (model %s)", parseErr, model)
+		}
+
+		lastErr = err
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return aiDecision{}, lastErr
+}
+
+// recentHistory bounds the context so long sessions stay fast and cheap.
+func recentHistory(history []sessionMessage) []sessionMessage {
+	if len(history) <= maxHistoryMessages {
+		return history
+	}
+	return history[len(history)-maxHistoryMessages:]
+}
+
+// complete performs one OpenRouter call and returns the answer with the model that produced it.
+func (c *aiClient) complete(ctx context.Context, messages []openRouterMessage, format openRouterResponseFormat, reasoning *openRouterReasoning, requireParameters bool) (content, model string, resultErr error) {
 	payload, err := json.Marshal(openRouterRequest{
 		Model:          c.model,
 		Messages:       messages,
-		MaxTokens:      400,
+		MaxTokens:      aiMaxTokens,
 		Temperature:    0.2,
-		ResponseFormat: decisionResponseFormat(),
-		Provider:       openRouterProvider{RequireParameters: true},
+		ResponseFormat: format,
+		Provider:       openRouterProvider{RequireParameters: requireParameters},
+		Reasoning:      reasoning,
 	})
 	if err != nil {
-		return aiDecision{}, err
+		return "", "", err
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return aiDecision{}, err
+		return "", "", err
 	}
 	request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	request.Header.Set("Content-Type", "application/json")
@@ -184,32 +240,32 @@ func (c *aiClient) ask(ctx context.Context, knowledge, selectedCamp string, hist
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return aiDecision{}, err
+		return "", "", err
 	}
 	defer func() {
 		if err := response.Body.Close(); err != nil && resultErr == nil {
-			decision = aiDecision{}
+			content, model = "", ""
 			resultErr = fmt.Errorf("close OpenRouter response: %w", err)
 		}
 	}()
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return aiDecision{}, fmt.Errorf("OpenRouter returned HTTP %d", response.StatusCode)
+		return "", "", fmt.Errorf("OpenRouter returned HTTP %d", response.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return aiDecision{}, err
+		return "", "", err
 	}
 
 	var result openRouterResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return aiDecision{}, errors.New("OpenRouter response is not valid JSON")
+		return "", "", errors.New("OpenRouter response is not valid JSON")
 	}
 	if len(result.Choices) == 0 {
-		return aiDecision{}, errors.New("OpenRouter returned no choices")
+		return "", result.Model, errors.New("OpenRouter returned no choices")
 	}
-	return parseAIDecision(result.Choices[0].Message.Content)
+	return result.Choices[0].Message.Content, result.Model, nil
 }
 
 // parseAIDecision reads the action contract out of the model answer.

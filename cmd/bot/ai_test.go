@@ -3,12 +3,21 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestSystemPromptSeparatesDestinationReferenceFromCampTerms(t *testing.T) {
+	for _, instruction := range []string{"По общей справочной информации о направлении", "Не выдавай такую информацию за условие кэмпа Dzala", "проверить прогноз"} {
+		if !strings.Contains(systemPrompt, instruction) {
+			t.Errorf("systemPrompt does not contain %q", instruction)
+		}
+	}
+}
 
 func TestParseAIDecision(t *testing.T) {
 	tests := []struct {
@@ -131,9 +140,95 @@ func TestAskSendsKnowledgeCampPreviousTurnAndSchema(t *testing.T) {
 	if !request.Provider.RequireParameters {
 		t.Error("provider.require_parameters = false, want true")
 	}
+	if request.Reasoning == nil || request.Reasoning.Effort != "low" || !request.Reasoning.Exclude {
+		t.Errorf("reasoning = %+v, want low effort and excluded thinking tokens", request.Reasoning)
+	}
 	action := request.ResponseFormat.JSONSchema.Schema.Properties["action"]
 	if strings.Join(action.Enum, ",") != "answer,clarify,handoff" {
 		t.Errorf("action enum = %v, want answer, clarify, handoff", action.Enum)
+	}
+}
+
+func TestAskRetriesWhenModelIgnoresSchema(t *testing.T) {
+	var requests []openRouterRequest
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, reader *http.Request) {
+		var request openRouterRequest
+		body, _ := io.ReadAll(reader.Body)
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		requests = append(requests, request)
+		writer.Header().Set("Content-Type", "application/json")
+		if len(requests) == 1 {
+			_, _ = io.WriteString(writer, `{"model":"vendor/chatty","choices":[{"message":{"content":"Конечно! Расскажу про кэмп."}}]}`)
+			return
+		}
+		_, _ = io.WriteString(writer, `{"model":"vendor/obedient","choices":[{"message":{"content":"{\"action\":\"answer\",\"message\":\"Кэмп проходит в Тбилиси.\"}"}}]}`)
+	}))
+	defer server.Close()
+
+	client := newAIClient("test-key", "")
+	client.endpoint = server.URL
+
+	decision, err := client.ask(context.Background(), "knowledge", "", nil, "Где кэмп?")
+	if err != nil {
+		t.Fatalf("ask() error = %v", err)
+	}
+	if decision.Action != actionAnswer || decision.Message != "Кэмп проходит в Тбилиси." {
+		t.Errorf("ask() = %+v, want the answer from the retry", decision)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want a strict attempt and a JSON-object retry", len(requests))
+	}
+	if requests[0].ResponseFormat.Type != "json_schema" || requests[0].ResponseFormat.JSONSchema == nil {
+		t.Errorf("first attempt = %+v, want strict JSON schema", requests[0].ResponseFormat)
+	}
+	if requests[1].ResponseFormat.Type != "json_object" || requests[1].ResponseFormat.JSONSchema != nil {
+		t.Errorf("retry = %+v, want plain JSON object mode", requests[1].ResponseFormat)
+	}
+	if requests[1].Provider.RequireParameters {
+		t.Error("retry must not require provider parameters")
+	}
+	if requests[1].Reasoning != nil {
+		t.Errorf("retry reasoning = %+v, want it omitted so any provider can answer", requests[1].Reasoning)
+	}
+}
+
+func TestAskKeepsOnlyRecentHistory(t *testing.T) {
+	var request openRouterRequest
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, reader *http.Request) {
+		body, _ := io.ReadAll(reader.Body)
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"choices":[{"message":{"content":"{\"action\":\"answer\",\"message\":\"Готово.\"}"}}]}`)
+	}))
+	defer server.Close()
+
+	client := newAIClient("test-key", "")
+	client.endpoint = server.URL
+
+	history := make([]sessionMessage, 0, 60)
+	for index := range 60 {
+		role := sessionRoleUser
+		if index%2 == 1 {
+			role = sessionRoleAssistant
+		}
+		history = append(history, sessionMessage{role: role, text: fmt.Sprintf("сообщение %d", index)})
+	}
+	if _, err := client.ask(context.Background(), "knowledge", "", history, "последний вопрос"); err != nil {
+		t.Fatalf("ask() error = %v", err)
+	}
+
+	if len(request.Messages) != maxHistoryMessages+2 {
+		t.Fatalf("messages = %d, want %d", len(request.Messages), maxHistoryMessages+2)
+	}
+	if !strings.Contains(request.Messages[1].Content, "сообщение 40") {
+		t.Errorf("oldest kept history message = %q, want the 40th message", request.Messages[1].Content)
+	}
+	if !strings.Contains(request.Messages[len(request.Messages)-1].Content, "последний вопрос") {
+		t.Error("the last message must be the current question")
 	}
 }
 
