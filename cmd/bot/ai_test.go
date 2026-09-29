@@ -12,7 +12,13 @@ import (
 )
 
 func TestSystemPromptSeparatesDestinationReferenceFromCampTerms(t *testing.T) {
-	for _, instruction := range []string{"По общей справочной информации о направлении", "Не выдавай такую информацию за условие кэмпа Dzala", "проверить прогноз"} {
+	for _, instruction := range []string{
+		"По общей справочной информации о направлении",
+		"Не выдавай такую информацию за условие кэмпа Dzala",
+		"проверить прогноз",
+		"Не смешивай регулярные тренировки в Тбилиси с программами кэмпов",
+		"только на русском языке",
+	} {
 		if !strings.Contains(systemPrompt, instruction) {
 			t.Errorf("systemPrompt does not contain %q", instruction)
 		}
@@ -70,6 +76,8 @@ func TestParseAIDecisionRejectsBadAnswers(t *testing.T) {
 		{name: "broken JSON", raw: `{"action":"answer","message":}`},
 		{name: "unknown action", raw: `{"action":"escalate","message":"текст"}`},
 		{name: "empty answer message", raw: `{"action":"answer","message":"   "}`},
+		{name: "mixed CJK script", raw: `{"action":"answer","message":"Тренировки включают физическую準備"}`},
+		{name: "truncated sentence", raw: `{"action":"answer","message":"Тренировки включают технику,"}`},
 	}
 
 	for _, test := range tests {

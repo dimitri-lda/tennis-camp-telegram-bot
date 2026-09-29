@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 )
 
@@ -90,6 +94,11 @@ func TestLocalFallbackReplyRules(t *testing.T) {
 		t.Errorf("keyboard = %+v, want the camp info button", keyboard.InlineKeyboard[0][0])
 	}
 
+	trainingText, trainingMenu, ok := localFallbackReply(knowledgeFixture, "Какие есть тренировки?", "")
+	if !ok || !strings.Contains(trainingText, "Тренировки") || trainingMenu.InlineKeyboard[0][1].CallbackData != trainingCallbackData {
+		t.Errorf("training fallback = %q, %+v, %t", trainingText, trainingMenu, ok)
+	}
+
 	if _, _, ok := localFallbackReply(knowledgeFixture, "Совсем непонятный запрос", ""); ok {
 		t.Error("localFallbackReply() ok = true, want false without a camp or topic")
 	}
@@ -169,18 +178,36 @@ func TestOperatorsDisabledKeepsBotAlive(t *testing.T) {
 	}
 }
 
-func TestAIFailureResponseWithoutOperatorsHasNoButton(t *testing.T) {
-	params := aiFailureResponse(7, false)
-	if params.Text != operatorsDownMessage {
-		t.Errorf("text = %q, want %q", params.Text, operatorsDownMessage)
-	}
-	if params.ReplyMarkup != nil {
-		t.Error("ReplyMarkup is not nil without TELEGRAM_MANAGER_CHAT_ID")
-	}
+func TestAIFailureImmediatelyCreatesOperatorTicket(t *testing.T) {
+	aiServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"не JSON"}}]}`))
+	}))
+	defer aiServer.Close()
 
-	params = aiFailureResponse(7, true)
-	if params.Text != aiFailureMessage || params.ReplyMarkup == nil {
-		t.Errorf("configured response = %+v, want AI failure text and operator button", params)
+	telegramServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true,"result":{"message_id":1,"date":0,"chat":{"id":-100,"type":"supergroup"},"text":"ok"}}`))
+	}))
+	defer telegramServer.Close()
+
+	telegramBot, err := bot.New("1:test", bot.WithSkipGetMe(), bot.WithServerURL(telegramServer.URL))
+	if err != nil {
+		t.Fatalf("bot.New() error = %v", err)
+	}
+	client := newAIClient("test-key", "test-model")
+	client.endpoint = aiServer.URL
+	application := &app{store: newStore(), knowledge: knowledgeFixture, ai: client, managerChatID: -100}
+	application.store.startSession(7)
+
+	application.answerQuestion(context.Background(), telegramBot, 7, &models.User{ID: 7, FirstName: "Дмитрий"}, "Кто тренер?")
+
+	current, active := application.store.activeTicket(7)
+	if !active {
+		t.Fatal("activeTicket() = false, want an operator ticket after AI failure")
+	}
+	if current.question != "Кто тренер?" || current.status != ticketOpen {
+		t.Errorf("ticket = %+v, want the original question and open status", current)
 	}
 }
 
@@ -220,6 +247,53 @@ func TestTelegramErrorSummaryDoesNotExposeErrorText(t *testing.T) {
 	summary := telegramErrorSummary(errors.New(secret))
 	if strings.Contains(summary, "SECRET") || strings.Contains(summary, "api.telegram.org") {
 		t.Errorf("telegramErrorSummary() leaked sensitive URL: %q", summary)
+	}
+}
+
+func TestBotCommandsIncludeStartAndExit(t *testing.T) {
+	commands := botCommands()
+	if len(commands) != 2 {
+		t.Fatalf("botCommands() returned %d commands, want 2", len(commands))
+	}
+	if commands[0].Command != "start" || commands[1].Command != "exit" {
+		t.Errorf("botCommands() = %+v, want start and exit", commands)
+	}
+}
+
+func TestMainMenuAndCampSubmenu(t *testing.T) {
+	mainMenu := mainMenuKeyboard().InlineKeyboard
+	if len(mainMenu) != 2 {
+		t.Fatalf("mainMenuKeyboard() rows = %d, want 2", len(mainMenu))
+	}
+	callbacks := []string{
+		mainMenu[0][0].CallbackData,
+		mainMenu[0][1].CallbackData,
+		mainMenu[1][0].CallbackData,
+		mainMenu[1][1].CallbackData,
+	}
+	want := []string{campsCallbackData, trainingCallbackData, askCallbackData, aboutCallbackData}
+	if strings.Join(callbacks, ",") != strings.Join(want, ",") {
+		t.Errorf("main menu callbacks = %v, want %v", callbacks, want)
+	}
+
+	campMenu := campsMenuKeyboard().InlineKeyboard
+	if len(campMenu) != 3 || campMenu[0][0].CallbackData != campCallbackPrefix+"tsinandali" || campMenu[2][0].CallbackData != menuCallbackData {
+		t.Errorf("campsMenuKeyboard() = %+v", campMenu)
+	}
+}
+
+func TestTrainingKeyboardContainsOperatorAndMenu(t *testing.T) {
+	keyboard := trainingKeyboard().InlineKeyboard
+	if len(keyboard) != 2 || keyboard[0][0].CallbackData != operatorCallbackData || keyboard[1][0].CallbackData != menuCallbackData {
+		t.Errorf("trainingKeyboard() = %+v", keyboard)
+	}
+}
+
+func TestStartAndMenuMessagesInviteDirectAIQuestion(t *testing.T) {
+	for name, message := range map[string]string{"start": startMessage, "menu": menuMessage} {
+		if !strings.Contains(message, aiPromptMessage) {
+			t.Errorf("%s message does not contain AI prompt", name)
+		}
 	}
 }
 

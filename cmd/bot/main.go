@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 	"github.com/joho/godotenv"
 )
 
@@ -58,6 +59,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("create Telegram bot: %s", telegramErrorSummary(err))
 	}
+	if err := setBotCommands(ctx, telegramBot); err != nil {
+		logTelegramError("set Telegram commands", err)
+	}
 
 	telegramBot.RegisterHandler(bot.HandlerTypeMessageText, "start", bot.MatchTypeCommand, application.startHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeMessageText, "exit", bot.MatchTypeCommand, application.exitHandler)
@@ -65,6 +69,8 @@ func main() {
 	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, campCallbackPrefix, bot.MatchTypePrefix, application.campHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, campInfoCallbackPrefix, bot.MatchTypePrefix, application.campInfoHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, campDetailsCallbackPrefix, bot.MatchTypePrefix, application.campDetailsHandler)
+	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, campsCallbackData, bot.MatchTypeExact, application.campsHandler)
+	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, trainingCallbackData, bot.MatchTypeExact, application.trainingHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, aboutCallbackData, bot.MatchTypeExact, application.aboutHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, askCallbackData, bot.MatchTypeExact, application.askHandler)
 	telegramBot.RegisterHandler(bot.HandlerTypeCallbackQueryData, operatorCallbackData, bot.MatchTypeExact, application.operatorHandler)
@@ -75,6 +81,27 @@ func main() {
 	log.Println("bot started in polling mode")
 	telegramBot.Start(ctx)
 	log.Println("bot stopped")
+}
+
+func botCommands() []models.BotCommand {
+	return []models.BotCommand{
+		{Command: "start", Description: "Начать новую сессию"},
+		{Command: "exit", Description: "Завершить текущую сессию"},
+	}
+}
+
+func setBotCommands(ctx context.Context, telegramBot *bot.Bot) error {
+	if _, err := telegramBot.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+		Commands: botCommands(),
+		Scope:    &models.BotCommandScopeAllPrivateChats{},
+	}); err != nil {
+		return err
+	}
+	_, err := telegramBot.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+		Commands: []models.BotCommand{{Command: "chatid", Description: "Показать ID группы"}},
+		Scope:    &models.BotCommandScopeAllGroupChats{},
+	})
+	return err
 }
 
 func parseManagerChatID(value string) (int64, error) {

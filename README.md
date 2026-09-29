@@ -61,23 +61,28 @@ restrictions. Failed attempts log the model that answered, so
 
 ## Client flow
 
-1. `/start` starts a session and shows the main menu: three camps, «О Dzala»
-   and «Задать вопрос». A plain text message sent before `/start` starts a session,
-   shows the menu and is then processed as the first question.
-2. Choosing a camp stores it for the session and shows «О кэмпе», «Связаться с
-   оператором» and «Главное меню». «О кэмпе» opens a short card from the knowledge
-   base, followed by an option to view detailed information.
-3. Any plain text message is treated as a question. The bot sends the knowledge
+1. `/start` starts a session and shows «Кэмпы», «Тренировки», «Другой вопрос»
+   and «О Dzala». `/start` and `/exit` are registered in Telegram's slash-command
+   menu. A plain text message sent before `/start` starts a session, shows the menu
+   and is then processed as the first question.
+2. «Кэмпы» opens the three destinations. Choosing one stores it for the session
+   and shows «О кэмпе», «Связаться с оператором» and «Главное меню». «О кэмпе»
+   opens a short card followed by an option to view detailed information.
+3. «Тренировки» shows the approved Tbilisi formats (individual, split or a group
+   of up to four), immediately invites a free-text AI question, and shows operator
+   and main-menu actions.
+4. Any plain text message is treated as a question. The bot sends the knowledge
    base, selected camp, complete in-memory session history and current question to
    OpenRouter and expects a strict JSON action: `answer`, `clarify` or `handoff`.
-4. `answer` and `clarify` replies carry operator and main-menu buttons. Questions
+5. `answer` and `clarify` replies carry operator and main-menu buttons. Questions
    about booking, availability, payment, discounts, refunds, cancellation, visas,
    flights, medical limitations or individual conditions go to an operator
    without an AI call.
-5. If AI fails or cannot provide useful data, recognized camp and topic words are
-   used to suggest the relevant «О кэмпе» button. Otherwise the client is offered
-   an operator instead of a technical error.
-6. `/exit` closes an active operator ticket, notifies the operator group and
+6. If an enabled AI request fails, times out or returns an invalid response, the
+   bot immediately creates an operator ticket without asking the client to confirm.
+   When AI is not configured at all, recognized camp and topic words may still use
+   a local knowledge-based hint.
+7. `/exit` closes an active operator ticket, notifies the operator group and
    clears the current session. The next plain text message starts a new session.
 
 ## Operator flow

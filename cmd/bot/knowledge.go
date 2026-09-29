@@ -48,6 +48,30 @@ func loadKnowledge(path string) (string, error) {
 	return string(content), nil
 }
 
+func trainingInfo(knowledge string) (string, bool) {
+	lines := strings.Split(knowledge, "\n")
+	start := -1
+	for index, line := range lines {
+		if headingLevel(line) == 2 && strings.TrimSpace(strings.TrimLeft(line, "#")) == "Тренировки в Тбилиси" {
+			start = index
+			break
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+
+	end := len(lines)
+	for index := start + 1; index < len(lines); index++ {
+		if level := headingLevel(lines[index]); level > 0 && level <= 3 {
+			end = index
+			break
+		}
+	}
+	text := plainText(strings.Join(lines[start:end], "\n"))
+	return text, text != ""
+}
+
 // campSection returns the title and the body of a "### <heading>" block.
 func campSection(knowledge, heading string) (string, string, bool) {
 	lines := strings.Split(knowledge, "\n")

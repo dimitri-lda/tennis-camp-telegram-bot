@@ -59,6 +59,25 @@ func TestLoadKnowledgeRejectsEmptyFile(t *testing.T) {
 	}
 }
 
+func TestTrainingInfoUsesKnowledgeBase(t *testing.T) {
+	knowledge, err := loadKnowledge(filepath.Join("..", "..", defaultKnowledgeFile))
+	if err != nil {
+		t.Fatalf("loadKnowledge() error = %v", err)
+	}
+	info, ok := trainingInfo(knowledge)
+	if !ok {
+		t.Fatal("trainingInfo() ok = false, want true")
+	}
+	for _, want := range []string{"Тренировки в Тбилиси", "индивидуально с тренером", "сплит", "группа до 4 человек"} {
+		if !strings.Contains(info, want) {
+			t.Errorf("trainingInfo() = %q, want %q", info, want)
+		}
+	}
+	if strings.Contains(info, "Требует подтверждения") {
+		t.Error("trainingInfo() must show only the approved client-facing text")
+	}
+}
+
 func TestCampSummaryUsesKnowledgeBase(t *testing.T) {
 	selected, ok := campByID("tbilisi")
 	if !ok {
@@ -129,6 +148,9 @@ func TestRepositoryKnowledgeCoversEveryCamp(t *testing.T) {
 		}
 	}
 	for _, topic := range []string{
+		"Тренировки в Тбилиси",
+		"индивидуально с тренером",
+		"группа до 4 человек",
 		"Есть ли комары и другие насекомые",
 		"Есть ли комары и риск малярии",
 		"Валюта, карты и наличные",

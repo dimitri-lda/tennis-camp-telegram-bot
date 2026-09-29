@@ -18,6 +18,8 @@ const (
 	campCallbackPrefix        = "camp:"
 	campInfoCallbackPrefix    = "camp_info:"
 	campDetailsCallbackPrefix = "camp_details:"
+	campsCallbackData         = "camps"
+	trainingCallbackData      = "training"
 	aboutCallbackData         = "about"
 	askCallbackData           = "ask"
 	operatorCallbackData      = "operator"
@@ -25,7 +27,9 @@ const (
 	takeTicketPrefix          = "ticket:take:"
 	closeTicketPrefix         = "ticket:close:"
 
-	askButtonText         = "✍️ Задать вопрос"
+	campsButtonText       = "🏕 Кэмпы"
+	trainingButtonText    = "🎾 Тренировки"
+	otherQuestionText     = "✍️ Другой вопрос"
 	aboutButtonText       = "🎾 О Dzala"
 	campInfoButtonText    = "🎾 О кэмпе"
 	campDetailsButtonText = "📋 Подробнее"
@@ -39,13 +43,15 @@ const (
 
 // Client messages.
 const (
-	startMessage            = "Привет! Я помогу разобраться с теннисными кэмпами Dzala. Выберите направление или задайте вопрос:"
-	menuMessage             = "Главное меню. Выберите направление или задайте вопрос:"
+	aiPromptMessage         = "Можете задать вопрос прямо здесь — наш ИИ попробует ответить по информации о кэмпах и тренировках."
+	startMessage            = "Привет! Я помогу с кэмпами и тренировками Dzala. Выберите раздел или задайте другой вопрос.\n\n" + aiPromptMessage
+	menuMessage             = "Главное меню. Выберите раздел или задайте другой вопрос.\n\n" + aiPromptMessage
+	campsMessage            = "Выберите кэмп:"
+	trainingUnavailable     = "Информация о тренировках сейчас недоступна. Могу связать вас с оператором."
 	aboutMessage            = "Раздел о Dzala сейчас готовится. Я могу помочь с информацией о кэмпах или связать вас с оператором."
 	askPromptMessage        = "Напишите ваш вопрос. Можно спросить о программе, тренировках, проживании или стоимости кэмпа."
 	campUnavailableMessage  = "Описание этого кэмпа сейчас недоступно. Могу передать ваш вопрос оператору."
 	questionLengthMessage   = "Вопрос должен содержать от 1 до 1000 символов."
-	aiFailureMessage        = "Не получилось подготовить ответ. Могу передать ваш вопрос оператору."
 	handoffDoneMessage      = "Передал ваш вопрос оператору. Ответ придёт сюда, в этот чат."
 	operatorPromptMessage   = "Напишите вопрос, который нужно передать оператору."
 	operatorBusyMessage     = "Ваш вопрос уже у оператора. Напишите сообщение — я передам его."
@@ -54,7 +60,6 @@ const (
 	ticketClosedMessage     = "Диалог с оператором завершён. Если появится новый вопрос, просто напишите его."
 	textOnlyMessage         = "Пока я понимаю только текстовые сообщения. Опишите, пожалуйста, вопрос словами."
 	textOnlyOperatorMessage = "Пока поддерживается только текст, поэтому я не смог передать это оператору."
-	aiPromptMessage         = "Можете задать вопрос прямо здесь — наш ИИ попробует ответить по информации о кэмпах."
 	sessionClosedMessage    = "Сессия завершена. Чтобы начать новую, отправьте любое сообщение или команду /start."
 	clientExitedNotice      = "Клиент завершил сессию командой /exit."
 	clientRestartedNotice   = "Клиент начал новую сессию командой /start."
@@ -154,6 +159,40 @@ func (a *app) menuHandler(ctx context.Context, telegramBot *bot.Bot, update *mod
 		ChatID:      chatID,
 		Text:        menuMessage,
 		ReplyMarkup: mainMenuKeyboard(),
+	})
+}
+
+func (a *app) campsHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
+	chatID, ok := clientCallbackChat(ctx, telegramBot, update)
+	if !ok {
+		return
+	}
+
+	a.ensureSession(chatID)
+	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        campsMessage,
+		ReplyMarkup: campsMenuKeyboard(),
+	})
+}
+
+func (a *app) trainingHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
+	chatID, ok := clientCallbackChat(ctx, telegramBot, update)
+	if !ok {
+		return
+	}
+
+	a.ensureSession(chatID)
+	text, ok := trainingInfo(a.knowledge)
+	if !ok {
+		text = trainingUnavailable
+	}
+	message := text + "\n\n" + aiPromptMessage
+	a.store.appendHistory(chatID, sessionRoleAssistant, message)
+	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        message,
+		ReplyMarkup: trainingKeyboard(),
 	})
 }
 
@@ -360,17 +399,17 @@ func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID i
 	decision, err := a.ai.ask(ctx, a.knowledge, selectedCamp, history, question)
 	if err != nil {
 		log.Printf("ask OpenRouter: %v", err)
-		if a.sendLocalFallback(ctx, telegramBot, chatID, question, state.campID) {
+		if a.operatorsEnabled() {
+			a.openTicket(ctx, telegramBot, chatID, from, question, "")
 			return
 		}
-		params := aiFailureResponse(chatID, a.operatorsEnabled())
 		a.store.update(chatID, func(state *chatState) {
 			state.stage = stageIdle
 			state.lastQuestion = question
 			state.lastAnswer = ""
 		})
-		a.store.appendHistory(chatID, sessionRoleAssistant, params.Text)
-		sendMessage(ctx, telegramBot, params)
+		a.store.appendHistory(chatID, sessionRoleAssistant, operatorsDownMessage)
+		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorsDownMessage})
 		return
 	}
 
@@ -659,7 +698,10 @@ func localFallbackReply(knowledge, question, selectedCampID string) (string, *mo
 		return "", nil, false
 	}
 	if hint.campID == "" {
-		return "Похоже, вас интересует информация о кэмпах. Выберите кэмп в главном меню.", mainMenuKeyboard(), true
+		if hint.topic == "тренировки" {
+			return "Если вы имеете в виду регулярные тренировки в Тбилиси, нажмите «Тренировки». Если вас интересует программа кэмпа, выберите «Кэмпы».", mainMenuKeyboard(), true
+		}
+		return "Похоже, вас интересует информация о кэмпах. Выберите «Кэмпы» в главном меню.", mainMenuKeyboard(), true
 	}
 
 	title := campTitle(knowledge, hint.campID)
@@ -789,13 +831,6 @@ func hasUnsupportedContent(message *models.Message) bool {
 
 func questionExceedsLimit(question string) bool {
 	return utf8.RuneCountInString(question) > maxQuestionLength
-}
-
-func aiFailureResponse(chatID int64, operatorsEnabled bool) *bot.SendMessageParams {
-	if !operatorsEnabled {
-		return &bot.SendMessageParams{ChatID: chatID, Text: operatorsDownMessage}
-	}
-	return &bot.SendMessageParams{ChatID: chatID, Text: aiFailureMessage, ReplyMarkup: operatorKeyboard()}
 }
 
 // planQuestion decides how a question is handled before any AI call is made.
@@ -942,23 +977,34 @@ func sendMessage(ctx context.Context, telegramBot *bot.Bot, params *bot.SendMess
 }
 
 func mainMenuKeyboard() *models.InlineKeyboardMarkup {
-	rows := make([][]models.InlineKeyboardButton, 0, 3)
-	row := make([]models.InlineKeyboardButton, 0, 2)
-	for _, item := range camps {
-		row = append(row, models.InlineKeyboardButton{Text: item.label, CallbackData: campCallbackPrefix + item.id})
-		if len(row) == 2 {
-			rows = append(rows, row)
-			row = make([]models.InlineKeyboardButton, 0, 2)
-		}
-	}
-	if len(row) > 0 {
-		rows = append(rows, row)
-	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{
+			{Text: campsButtonText, CallbackData: campsCallbackData},
+			{Text: trainingButtonText, CallbackData: trainingCallbackData},
+		},
+		{
+			{Text: otherQuestionText, CallbackData: askCallbackData},
+			{Text: aboutButtonText, CallbackData: aboutCallbackData},
+		},
+	}}
+}
 
-	return &models.InlineKeyboardMarkup{InlineKeyboard: append(rows, []models.InlineKeyboardButton{
-		{Text: aboutButtonText, CallbackData: aboutCallbackData},
-		{Text: askButtonText, CallbackData: askCallbackData},
-	})}
+func campsMenuKeyboard() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{
+			{Text: camps[0].label, CallbackData: campCallbackPrefix + camps[0].id},
+			{Text: camps[1].label, CallbackData: campCallbackPrefix + camps[1].id},
+		},
+		{{Text: camps[2].label, CallbackData: campCallbackPrefix + camps[2].id}},
+		{{Text: menuButtonText, CallbackData: menuCallbackData}},
+	}}
+}
+
+func trainingKeyboard() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: operatorButtonText, CallbackData: operatorCallbackData}},
+		{{Text: menuButtonText, CallbackData: menuCallbackData}},
+	}}
 }
 
 func selectedCampKeyboard(campID string) *models.InlineKeyboardMarkup {

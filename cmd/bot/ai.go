@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -29,7 +30,9 @@ const (
 
 const systemPrompt = `Ты — русскоязычный помощник теннисных кэмпов Dzala.
 
-Отвечай дружелюбно, спокойно и понятно для клиента. Используй только сведения из переданной базы знаний. Не используй собственные внешние знания и ничего не придумывай.
+Отвечай дружелюбно, спокойно и понятно для клиента. Используй только сведения из переданной базы знаний. Не используй собственные внешние знания и ничего не придумывай. Отвечай только на русском языке; названия отелей и собственные имена можно оставлять в оригинальном написании. Не используй китайские, японские или корейские символы.
+
+Раздел «Тренировки в Тбилиси» описывает регулярные тренировки, а разделы отдельных кэмпов — программы кэмпов. Не смешивай регулярные тренировки в Тбилиси с программами кэмпов. Не добавляй к регулярным тренировкам работу над техникой, физическую подготовку, расписание, имя тренера, цену или другие детали, если их нет в соответствующем разделе. Для отсутствующих деталей выбери handoff.
 
 Если ответ основан на разделе «Практическая информация о направлениях», явно скажи: «По общей справочной информации о направлении». Не выдавай такую информацию за условие кэмпа Dzala. Для погоды описывай только климатический ориентир и советуй проверить прогноз перед поездкой.
 
@@ -268,6 +271,25 @@ func (c *aiClient) complete(ctx context.Context, messages []openRouterMessage, f
 	return result.Choices[0].Message.Content, result.Model, nil
 }
 
+func hasDisallowedScript(text string) bool {
+	for _, char := range text {
+		if unicode.In(char, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksTruncated(text string) bool {
+	text = strings.TrimSpace(text)
+	for _, suffix := range []string{",", ";", ":", "-", "—"} {
+		if strings.HasSuffix(text, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // parseAIDecision reads the action contract out of the model answer.
 // The action is never guessed from the answer text.
 func parseAIDecision(raw string) (aiDecision, error) {
@@ -291,6 +313,12 @@ func parseAIDecision(raw string) (aiDecision, error) {
 	case actionAnswer, actionClarify:
 		if decision.Message == "" {
 			return aiDecision{}, errors.New("AI answer has an empty message")
+		}
+		if hasDisallowedScript(decision.Message) {
+			return aiDecision{}, errors.New("AI answer contains an unexpected script")
+		}
+		if looksTruncated(decision.Message) {
+			return aiDecision{}, errors.New("AI answer appears truncated")
 		}
 		return decision, nil
 	default:
