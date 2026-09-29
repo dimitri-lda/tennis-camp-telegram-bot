@@ -295,6 +295,16 @@ func TestStartAndMenuMessagesInviteDirectAIQuestion(t *testing.T) {
 			t.Errorf("%s message does not contain AI prompt", name)
 		}
 	}
+	for _, want := range []string{"большого тенниса", "падела", "выездные теннисные кэмпы"} {
+		if !strings.Contains(startMessage, want) {
+			t.Errorf("start message does not contain %q", want)
+		}
+	}
+	for _, want := range []string{"«Тренировки»", "«Кэмпы»", "«О Dzala»"} {
+		if !strings.Contains(menuMessage, want) {
+			t.Errorf("menu message does not contain %q", want)
+		}
+	}
 }
 
 func TestCampKeyboardsKeepMainMenuAvailable(t *testing.T) {

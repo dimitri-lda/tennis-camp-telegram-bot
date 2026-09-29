@@ -68,13 +68,32 @@ func TestTrainingInfoUsesKnowledgeBase(t *testing.T) {
 	if !ok {
 		t.Fatal("trainingInfo() ok = false, want true")
 	}
-	for _, want := range []string{"Тренировки в Тбилиси", "индивидуально с тренером", "сплит", "группа до 4 человек"} {
+	for _, want := range []string{"Тренировки в Тбилиси", "большому теннису и паделу", "сплит для двух игроков", "группы до 4 человек", "ориентировочными"} {
 		if !strings.Contains(info, want) {
 			t.Errorf("trainingInfo() = %q, want %q", info, want)
 		}
 	}
 	if strings.Contains(info, "Требует подтверждения") {
 		t.Error("trainingInfo() must show only the approved client-facing text")
+	}
+}
+
+func TestAboutInfoUsesKnowledgeBase(t *testing.T) {
+	knowledge, err := loadKnowledge(filepath.Join("..", "..", defaultKnowledgeFile))
+	if err != nil {
+		t.Fatalf("loadKnowledge() error = %v", err)
+	}
+	info, ok := aboutInfo(knowledge)
+	if !ok {
+		t.Fatal("aboutInfo() ok = false, want true")
+	}
+	for _, want := range []string{"Dzala Tennis School", "большого тенниса и падела", "Натела Дзаламидзе", "43-й строчки", "грузинском, русском и английском"} {
+		if !strings.Contains(info, want) {
+			t.Errorf("aboutInfo() = %q, want %q", info, want)
+		}
+	}
+	if strings.Contains(info, "Наивысшая позиция") {
+		t.Error("aboutInfo() must show only the short client-facing introduction")
 	}
 }
 
@@ -148,9 +167,19 @@ func TestRepositoryKnowledgeCoversEveryCamp(t *testing.T) {
 		}
 	}
 	for _, topic := range []string{
+		"О Dzala",
+		"43-й строчки мирового парного рейтинга WTA",
 		"Тренировки в Тбилиси",
-		"индивидуально с тренером",
-		"группа до 4 человек",
+		"сплит для двух игроков",
+		"группы до 4 человек",
+		"Даниэль Булин",
+		"Юлия Вилисова",
+		"Анна Петрушко",
+		"Ника Мурадашвили",
+		"Подарочные сертификаты",
+		"Все цены являются ориентировочными",
+		"Mziuri Tennis Courts",
+		"Архивные акции",
 		"Есть ли комары и другие насекомые",
 		"Есть ли комары и риск малярии",
 		"Валюта, карты и наличные",
@@ -160,6 +189,11 @@ func TestRepositoryKnowledgeCoversEveryCamp(t *testing.T) {
 	} {
 		if !strings.Contains(knowledge, topic) {
 			t.Errorf("knowledge base does not cover %q", topic)
+		}
+	}
+	for _, forbidden := range []string{"27 лет в профессиональном теннисе", "Раздел ожидает утверждённый текст"} {
+		if strings.Contains(knowledge, forbidden) {
+			t.Errorf("knowledge base contains misleading or obsolete text %q", forbidden)
 		}
 	}
 }

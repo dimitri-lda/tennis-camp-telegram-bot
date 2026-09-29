@@ -1,8 +1,9 @@
 # Tennis Camp Telegram Bot
 
-Telegram bot for the Dzala tennis camps. It answers client questions from the
-`knowledge/dzala.md` knowledge base and hands the conversation over to a human
-operator when the knowledge base is not allowed to answer.
+Telegram bot for Dzala Tennis School, regular tennis and padel training, and
+Dzala tennis camps. It answers client questions from the `knowledge/dzala.md`
+knowledge base and hands the conversation over to a human operator when the
+knowledge base is not allowed to answer.
 
 ## Requirements
 
@@ -18,7 +19,7 @@ operator when the knowledge base is not allowed to answer.
    | `TELEGRAM_BOT_TOKEN` | yes | Bot token from @BotFather. |
    | `TELEGRAM_MANAGER_CHAT_ID` | no | ID of the private operator group. Without it the operator handoff is disabled. |
    | `OPENROUTER_API_KEY` | no | OpenRouter key. Without it every question goes to the operators. |
-   | `OPENROUTER_MODEL` | no | Model name, `openrouter/free` by default. Prefer a fixed model, see below. |
+   | `OPENROUTER_MODEL` | no | Model name, `nvidia/nemotron-3-super-120b-a12b:free` by default. |
    | `KNOWLEDGE_FILE` | no | Knowledge base path, `knowledge/dzala.md` by default. |
 
 3. Run the bot in polling mode from the repository root, so that the default
@@ -29,29 +30,24 @@ operator when the knowledge base is not allowed to answer.
    ```
 
 The knowledge base is read once at startup. The bot refuses to start when the
-file is missing or empty. It contains both confirmed Dzala camp materials and a
-separately labelled practical destination FAQ based on public sources. The bot
-must present the latter as general reference information, not a Dzala condition.
+file is missing or empty. It separates school information, regular training,
+padel and each camp, and marks prices, promotions, schedules and team composition
+as changeable. A separately labelled practical destination FAQ is general
+reference information, not a Dzala condition.
 
 ## Choosing a model
 
-`openrouter/free` picks a random free model per request, so answer quality,
-latency and schema compliance vary. Set a fixed model for predictable answers:
+The default is the fixed free model used for this project:
 
 ```env
-OPENROUTER_MODEL=deepseek/deepseek-v4-flash-0731
+OPENROUTER_MODEL=nvidia/nemotron-3-super-120b-a12b:free
 ```
 
-Other inexpensive options with reliable structured outputs are `z-ai/glm-4.7-flash`,
-`qwen/qwen3.5-flash-02-23` and `google/gemini-2.5-flash-lite`. Avoid `~vendor/model-latest`
-aliases: some of them do not support structured outputs. Paid models require credits
-on the OpenRouter account; a ChatGPT subscription does not cover API usage.
-
-The first attempt asks for a strict JSON schema and caps reasoning, because
-thinking tokens are billed as output tokens and can crowd out the JSON answer. An
-unparsable answer triggers one retry in plain JSON mode without provider
-restrictions. Failed attempts log the model that answered, so
-`ask OpenRouter: ... (model vendor/name)` identifies a misbehaving model.
+OpenRouter advertises support for `response_format` and reasoning parameters for
+this model. The first attempt asks for a strict JSON schema and excludes reasoning
+from the answer budget. An unparsable answer triggers one retry in plain JSON mode
+without provider restrictions. Failed attempts log only the model name and a safe
+error summary; API keys and client data are never logged.
 
 ## Operator group
 
@@ -61,19 +57,21 @@ restrictions. Failed attempts log the model that answered, so
 
 ## Client flow
 
-1. `/start` starts a session and shows «Кэмпы», «Тренировки», «Другой вопрос»
-   and «О Dzala». `/start` and `/exit` are registered in Telegram's slash-command
-   menu. A plain text message sent before `/start` starts a session, shows the menu
-   and is then processed as the first question.
+1. `/start` starts a session with a short overview of the Tbilisi school,
+   regular tennis and padel training, and camps. It shows «Кэмпы», «Тренировки»,
+   «Другой вопрос» and «О Dzala». `/start` and `/exit` are registered in
+   Telegram's slash-command menu. A plain text message sent before `/start` starts
+   a session, shows the menu and is then processed as the first question.
 2. «Кэмпы» opens the three destinations. Choosing one stores it for the session
    and shows «О кэмпе», «Связаться с оператором» and «Главное меню». «О кэмпе»
    opens a short card followed by an option to view detailed information.
-3. «Тренировки» shows the approved Tbilisi formats (individual, split or a group
-   of up to four), immediately invites a free-text AI question, and shows operator
-   and main-menu actions.
+3. «Тренировки» shows a short regular-training card; «О Dzala» shows a short
+   school card. Both select an explicit conversation section, invite a free-text
+   AI question and keep operator and main-menu actions available.
 4. Any plain text message is treated as a question. The bot sends the knowledge
-   base, selected camp, complete in-memory session history and current question to
-   OpenRouter and expects a strict JSON action: `answer`, `clarify` or `handoff`.
+   base, active section, selected camp, bounded in-memory session history and
+   current question to OpenRouter and expects a strict JSON action: `answer`,
+   `clarify` or `handoff`.
 5. `answer` and `clarify` replies carry operator and main-menu buttons. Questions
    about booking, availability, payment, discounts, refunds, cancellation, visas,
    flights, medical limitations or individual conditions go to an operator

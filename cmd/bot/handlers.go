@@ -43,13 +43,13 @@ const (
 
 // Client messages.
 const (
-	aiPromptMessage         = "Можете задать вопрос прямо здесь — наш ИИ попробует ответить по информации о кэмпах и тренировках."
-	startMessage            = "Привет! Я помогу с кэмпами и тренировками Dzala. Выберите раздел или задайте другой вопрос.\n\n" + aiPromptMessage
-	menuMessage             = "Главное меню. Выберите раздел или задайте другой вопрос.\n\n" + aiPromptMessage
+	aiPromptMessage         = "Можете задать вопрос прямо здесь — ИИ ответит по информации о школе, тренировках и кэмпах Dzala."
+	startMessage            = "Привет! Dzala Tennis School — школа большого тенниса и падела в Тбилиси, которая также проводит выездные теннисные кэмпы. Выберите интересующий раздел или задайте другой вопрос.\n\n" + aiPromptMessage
+	menuMessage             = "Главное меню. Выберите «Тренировки», «Кэмпы» или «О Dzala», чтобы перейти к нужной теме.\n\n" + aiPromptMessage
 	campsMessage            = "Выберите кэмп:"
 	trainingUnavailable     = "Информация о тренировках сейчас недоступна. Могу связать вас с оператором."
-	aboutMessage            = "Раздел о Dzala сейчас готовится. Я могу помочь с информацией о кэмпах или связать вас с оператором."
-	askPromptMessage        = "Напишите ваш вопрос. Можно спросить о программе, тренировках, проживании или стоимости кэмпа."
+	aboutUnavailable        = "Информация о Dzala сейчас недоступна. Могу связать вас с оператором."
+	askPromptMessage        = "Напишите вопрос о Dzala, регулярных тренировках, паделе или теннисных кэмпах."
 	campUnavailableMessage  = "Описание этого кэмпа сейчас недоступно. Могу передать ваш вопрос оператору."
 	questionLengthMessage   = "Вопрос должен содержать от 1 до 1000 символов."
 	handoffDoneMessage      = "Передал ваш вопрос оператору. Ответ придёт сюда, в этот чат."
@@ -154,7 +154,7 @@ func (a *app) menuHandler(ctx context.Context, telegramBot *bot.Bot, update *mod
 	}
 
 	a.ensureSession(chatID)
-	a.store.update(chatID, func(state *chatState) { state.stage = stageIdle })
+	a.store.selectSection(chatID, sectionGeneral)
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        menuMessage,
@@ -169,6 +169,7 @@ func (a *app) campsHandler(ctx context.Context, telegramBot *bot.Bot, update *mo
 	}
 
 	a.ensureSession(chatID)
+	a.store.selectSection(chatID, sectionCamps)
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        campsMessage,
@@ -183,6 +184,7 @@ func (a *app) trainingHandler(ctx context.Context, telegramBot *bot.Bot, update 
 	}
 
 	a.ensureSession(chatID)
+	a.store.selectSection(chatID, sectionTraining)
 	text, ok := trainingInfo(a.knowledge)
 	if !ok {
 		text = trainingUnavailable
@@ -274,9 +276,16 @@ func (a *app) aboutHandler(ctx context.Context, telegramBot *bot.Bot, update *mo
 	}
 
 	a.ensureSession(chatID)
+	a.store.selectSection(chatID, sectionAbout)
+	text, ok := aboutInfo(a.knowledge)
+	if !ok {
+		text = aboutUnavailable
+	}
+	message := text + "\n\n" + aiPromptMessage
+	a.store.appendHistory(chatID, sessionRoleAssistant, message)
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      chatID,
-		Text:        aboutMessage,
+		Text:        message,
 		ReplyMarkup: operatorAndMenuKeyboard(),
 	})
 }
@@ -288,6 +297,7 @@ func (a *app) askHandler(ctx context.Context, telegramBot *bot.Bot, update *mode
 	}
 
 	a.ensureSession(chatID)
+	a.store.selectSection(chatID, sectionGeneral)
 	a.store.update(chatID, func(state *chatState) { state.stage = stageAwaitingQuestion })
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      chatID,
@@ -396,7 +406,7 @@ func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID i
 	}
 
 	selectedCamp := campTitle(a.knowledge, state.campID)
-	decision, err := a.ai.ask(ctx, a.knowledge, selectedCamp, history, question)
+	decision, err := a.ai.ask(ctx, a.knowledge, state.section, selectedCamp, history, question)
 	if err != nil {
 		log.Printf("ask OpenRouter: %v", err)
 		if a.operatorsEnabled() {

@@ -19,6 +19,9 @@ func TestSelectCampRemembersChoice(t *testing.T) {
 	if chat.campID != "tbilisi" {
 		t.Errorf("campID = %q, want %q", chat.campID, "tbilisi")
 	}
+	if chat.section != sectionCamps {
+		t.Errorf("section = %q, want %q", chat.section, sectionCamps)
+	}
 	if chat.stage != stageIdle {
 		t.Errorf("stage = %d, want stageIdle", chat.stage)
 	}
@@ -27,6 +30,22 @@ func TestSelectCampRemembersChoice(t *testing.T) {
 	}
 	if got := state.chat(8).campID; got != "" {
 		t.Errorf("campID of another chat = %q, want an empty string", got)
+	}
+}
+
+func TestSelectSectionClearsCampContext(t *testing.T) {
+	state := newStore()
+	state.selectCamp(7, "tbilisi")
+	state.selectSection(7, sectionTraining)
+
+	chat := state.chat(7)
+	if chat.section != sectionTraining || chat.campID != "" {
+		t.Errorf("chat = %+v, want training section without a selected camp", chat)
+	}
+
+	state.selectSection(7, sectionGeneral)
+	if chat = state.chat(7); chat.section != "" || chat.campID != "" {
+		t.Errorf("chat = %+v, want general context without a selected camp", chat)
 	}
 }
 

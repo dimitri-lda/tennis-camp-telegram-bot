@@ -49,10 +49,18 @@ func loadKnowledge(path string) (string, error) {
 }
 
 func trainingInfo(knowledge string) (string, bool) {
+	return sectionIntro(knowledge, sectionTraining)
+}
+
+func aboutInfo(knowledge string) (string, bool) {
+	return sectionIntro(knowledge, sectionAbout)
+}
+
+func sectionIntro(knowledge, title string) (string, bool) {
 	lines := strings.Split(knowledge, "\n")
 	start := -1
 	for index, line := range lines {
-		if headingLevel(line) == 2 && strings.TrimSpace(strings.TrimLeft(line, "#")) == "Тренировки в Тбилиси" {
+		if headingLevel(line) == 2 && strings.TrimSpace(strings.TrimLeft(line, "#")) == title {
 			start = index
 			break
 		}

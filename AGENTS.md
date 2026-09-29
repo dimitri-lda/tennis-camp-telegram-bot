@@ -8,3 +8,4 @@
 - Do not introduce Docker, Kubernetes, Redis, queues, or a database at this stage.
 - Never log tokens or personal data.
 - After changes, run `go fmt ./...`, `go vet ./...`, and `go test ./...`.
+- Start the bot with `/Users/dimitri_lda/sdk/go1.27.1/bin/go run ./cmd/bot`.

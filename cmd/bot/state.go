@@ -24,6 +24,11 @@ const (
 	sessionRoleUser      = "user"
 	sessionRoleAssistant = "assistant"
 	sessionRoleOperator  = "operator"
+
+	sectionGeneral  = ""
+	sectionAbout    = "О Dzala"
+	sectionTraining = "Тренировки в Тбилиси"
+	sectionCamps    = "Кэмпы"
 )
 
 type sessionMessage struct {
@@ -32,6 +37,7 @@ type sessionMessage struct {
 }
 
 type chatState struct {
+	section       string
 	campID        string
 	stage         dialogStage
 	lastQuestion  string
@@ -163,8 +169,19 @@ func (s *store) update(chatID int64, mutate func(*chatState)) {
 	s.chats[chatID] = state
 }
 
+func (s *store) selectSection(chatID int64, section string) {
+	s.update(chatID, func(state *chatState) {
+		state.section = section
+		state.campID = ""
+		state.stage = stageIdle
+		state.lastQuestion = ""
+		state.lastAnswer = ""
+	})
+}
+
 func (s *store) selectCamp(chatID int64, campID string) {
 	s.update(chatID, func(state *chatState) {
+		state.section = sectionCamps
 		state.campID = campID
 		state.stage = stageIdle
 		state.lastQuestion = ""
