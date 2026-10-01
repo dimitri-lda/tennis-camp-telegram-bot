@@ -28,13 +28,13 @@ const (
 	actionHandoff = "handoff"
 )
 
-const systemPrompt = `Ты — русскоязычный ИИ-консультант Dzala Tennis School. Ты помогаешь с информацией о школе, регулярных тренировках по большому теннису и паделу в Тбилиси и выездных теннисных кэмпах.
+const systemPrompt = `Ты — русскоязычный ИИ-помощник Dzala. Ты помогаешь с информацией о школе, регулярных тренировках по большому теннису и паделу в Тбилиси и выездных теннисных кэмпах.
 
 Используй только сведения из переданной базы знаний. Не дополняй их внешними знаниями, догадками или типичными условиями других школ. Отвечай только на русском языке; собственные имена, названия отелей и тарифов можно оставлять в оригинальном написании. Не используй китайские, японские или корейские символы.
 
 Приоритет контекста:
 1. Последний вопрос пользователя.
-2. Активный раздел и выбранный кэмп, явно указанные в последнем сообщении.
+2. Активный раздел, выбранная тема и выбранный кэмп, явно указанные в последнем сообщении.
 3. Недавняя история сессии для продолжения темы и слов «там», «туда», «этот», «она».
 4. Только соответствующий раздел базы знаний.
 
@@ -172,10 +172,10 @@ func decisionResponseFormat() openRouterResponseFormat {
 	}
 }
 
-// ask sends the knowledge base, the selected section, the selected camp and the current question to
+// ask sends the knowledge base, selected section, topic, camp and current question to
 // OpenRouter. Free models sometimes ignore the schema, so a plain JSON mode
 // retry follows an unparsable answer.
-func (c *aiClient) ask(ctx context.Context, knowledge, selectedSection, selectedCamp string, history []sessionMessage, question string) (aiDecision, error) {
+func (c *aiClient) ask(ctx context.Context, knowledge, selectedSection, selectedTopic, selectedCamp string, history []sessionMessage, question string) (aiDecision, error) {
 	if !c.enabled() {
 		return aiDecision{}, errors.New("OpenRouter API key is not configured")
 	}
@@ -192,14 +192,20 @@ func (c *aiClient) ask(ctx context.Context, knowledge, selectedSection, selected
 		}
 	}
 
-	userContent := "Активный раздел: не выбран.\nКэмп не выбран."
+	section := "не выбран"
 	if selectedSection != "" {
-		userContent = "Активный раздел: " + selectedSection + ".\nКэмп не выбран."
+		section = selectedSection
 	}
+	topic := "не выбрана"
+	if selectedTopic != "" {
+		topic = selectedTopic
+	}
+	camp := "не выбран"
 	if selectedCamp != "" {
-		userContent = "Активный раздел: " + sectionCamps + ".\nВыбранный кэмп: " + selectedCamp
+		section = sectionCamps
+		camp = selectedCamp
 	}
-	userContent += "\n\nТекущий вопрос: " + question
+	userContent := fmt.Sprintf("Активный раздел: %s.\nВыбранная тема: %s.\nВыбранный кэмп: %s.\n\nТекущий вопрос: %s", section, topic, camp, question)
 	messages = append(messages, openRouterMessage{Role: "user", Content: userContent})
 
 	var lastErr error

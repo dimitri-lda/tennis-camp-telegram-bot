@@ -90,12 +90,12 @@ func TestLocalFallbackReplyRules(t *testing.T) {
 	if !strings.Contains(text, "Тбилиси, Грузия") {
 		t.Errorf("text = %q, want the selected camp title", text)
 	}
-	if keyboard.InlineKeyboard[0][0].CallbackData != campInfoCallbackPrefix+"tbilisi" {
-		t.Errorf("keyboard = %+v, want the camp info button", keyboard.InlineKeyboard[0][0])
+	if keyboard.InlineKeyboard[0][0].CallbackData != campTopicCallbackPrefix+"tbilisi:program" {
+		t.Errorf("keyboard = %+v, want the camp program button", keyboard.InlineKeyboard[0][0])
 	}
 
 	trainingText, trainingMenu, ok := localFallbackReply(knowledgeFixture, "Какие есть тренировки?", "")
-	if !ok || !strings.Contains(trainingText, "Тренировки") || trainingMenu.InlineKeyboard[0][1].CallbackData != trainingCallbackData {
+	if !ok || !strings.Contains(trainingText, "Тренировки") || trainingMenu.InlineKeyboard[0][0].CallbackData != trainingCallbackData {
 		t.Errorf("training fallback = %q, %+v, %t", trainingText, trainingMenu, ok)
 	}
 
@@ -111,7 +111,7 @@ func TestFormatSessionHistory(t *testing.T) {
 		{role: sessionRoleOperator, text: "Добрый день!"},
 	}
 	formatted := formatSessionHistory(history)
-	for _, want := range []string{"Клиент: Расскажите про Тбилиси", "Бот: Кэмп проходит в Тбилиси.", "Оператор: Добрый день!"} {
+	for _, want := range []string{"Клиент: Расскажите про Тбилиси", "ИИ-помощник: Кэмп проходит в Тбилиси.", "Оператор: Добрый день!"} {
 		if !strings.Contains(formatted, want) {
 			t.Errorf("formatSessionHistory() = %q, want %q", formatted, want)
 		}
@@ -185,8 +185,12 @@ func TestAIFailureImmediatelyCreatesOperatorTicket(t *testing.T) {
 	}))
 	defer aiServer.Close()
 
-	telegramServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	telegramServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(request.URL.Path, "/sendChatAction") {
+			_, _ = writer.Write([]byte(`{"ok":true,"result":true}`))
+			return
+		}
 		_, _ = writer.Write([]byte(`{"ok":true,"result":{"message_id":1,"date":0,"chat":{"id":-100,"type":"supergroup"},"text":"ok"}}`))
 	}))
 	defer telegramServer.Close()
@@ -212,21 +216,21 @@ func TestAIFailureImmediatelyCreatesOperatorTicket(t *testing.T) {
 }
 
 func TestTicketCard(t *testing.T) {
-	current := ticket{id: 3, campTitle: "Тбилиси, Грузия", question: "Есть ли места?", aiAnswer: "Уточните у оператора."}
+	current := ticket{id: 3, section: sectionCamps, topic: "Даты и стоимость", campTitle: "Тбилиси, Грузия", question: "Есть ли места?", aiAnswer: "Уточните у оператора."}
 	card := ticketCard(current, &models.User{FirstName: "Иван", Username: "ivan"})
 
-	for _, want := range []string{"Новая заявка", "Заявка №3", "Кэмп: Тбилиси, Грузия", "Имя: Иван", "Telegram: @ivan", "Вопрос: Есть ли места?", "Ответ ИИ: Уточните у оператора."} {
+	for _, want := range []string{"Новая заявка", "Заявка №3", "Раздел: Кэмпы", "Тема: Даты и стоимость", "Кэмп: Тбилиси, Грузия", "Имя: Иван", "Telegram: @ivan", "Вопрос: Есть ли места?", "Ответ ИИ-помощника: Уточните у оператора."} {
 		if !strings.Contains(card, want) {
 			t.Errorf("ticketCard() = %q, want it to contain %q", card, want)
 		}
 	}
 
 	card = ticketCard(ticket{id: 4, question: "Вопрос"}, nil)
-	if !strings.Contains(card, "Кэмп: не выбран") {
-		t.Errorf("ticketCard() = %q, want it to report a missing camp", card)
+	if !strings.Contains(card, "Раздел: Общий вопрос") {
+		t.Errorf("ticketCard() = %q, want the general section", card)
 	}
-	if strings.Contains(card, "Ответ ИИ") {
-		t.Errorf("ticketCard() = %q, want no AI section when there is no AI answer", card)
+	if strings.Contains(card, "Кэмп:") || strings.Contains(card, "Ответ ИИ-помощника") {
+		t.Errorf("ticketCard() = %q, want no camp or AI section", card)
 	}
 }
 
@@ -271,51 +275,112 @@ func TestMainMenuAndCampSubmenu(t *testing.T) {
 		mainMenu[1][0].CallbackData,
 		mainMenu[1][1].CallbackData,
 	}
-	want := []string{campsCallbackData, trainingCallbackData, askCallbackData, aboutCallbackData}
+	want := []string{trainingCallbackData, campsCallbackData, aboutCallbackData, operatorCallbackData}
 	if strings.Join(callbacks, ",") != strings.Join(want, ",") {
 		t.Errorf("main menu callbacks = %v, want %v", callbacks, want)
 	}
 
 	campMenu := campsMenuKeyboard().InlineKeyboard
-	if len(campMenu) != 3 || campMenu[0][0].CallbackData != campCallbackPrefix+"tsinandali" || campMenu[2][0].CallbackData != menuCallbackData {
+	if len(campMenu) != 4 || campMenu[0][0].CallbackData != campCallbackPrefix+"tsinandali" || campMenu[2][0].CallbackData != operatorCallbackData || campMenu[3][0].CallbackData != menuCallbackData {
 		t.Errorf("campsMenuKeyboard() = %+v", campMenu)
 	}
 }
 
-func TestTrainingKeyboardContainsOperatorAndMenu(t *testing.T) {
+func TestTrainingKeyboardContainsTopicsOperatorAndMenu(t *testing.T) {
 	keyboard := trainingKeyboard().InlineKeyboard
-	if len(keyboard) != 2 || keyboard[0][0].CallbackData != operatorCallbackData || keyboard[1][0].CallbackData != menuCallbackData {
-		t.Errorf("trainingKeyboard() = %+v", keyboard)
+	if len(keyboard) != 6 {
+		t.Fatalf("trainingKeyboard() rows = %d, want 6", len(keyboard))
+	}
+	for _, want := range []string{
+		trainingTopicCallbackPrefix + "tennis",
+		trainingTopicCallbackPrefix + "padel",
+		trainingTopicCallbackPrefix + "children",
+		trainingTopicCallbackPrefix + "adults",
+		trainingTopicCallbackPrefix + "coaches",
+		trainingTopicCallbackPrefix + "prices",
+		trainingTopicCallbackPrefix + "locations",
+	} {
+		found := false
+		for _, row := range keyboard {
+			for _, button := range row {
+				if button.CallbackData == want {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("trainingKeyboard() does not contain %q", want)
+		}
+	}
+	if keyboard[4][0].CallbackData != operatorCallbackData || keyboard[5][0].CallbackData != menuCallbackData {
+		t.Errorf("trainingKeyboard() = %+v, want operator and main menu at the end", keyboard)
 	}
 }
 
-func TestStartAndMenuMessagesInviteDirectAIQuestion(t *testing.T) {
-	for name, message := range map[string]string{"start": startMessage, "menu": menuMessage} {
-		if !strings.Contains(message, aiPromptMessage) {
-			t.Errorf("%s message does not contain AI prompt", name)
+func TestStartAndMenuMessagesPresentAIAssistant(t *testing.T) {
+	for name, message := range map[string]string{"start": startMessage, "menu": menuMessage, "prompt": aiPromptMessage} {
+		if !strings.Contains(message, "ИИ-помощник Dzala") {
+			t.Errorf("%s message does not present the AI assistant", name)
 		}
 	}
-	for _, want := range []string{"большого тенниса", "падела", "выездные теннисные кэмпы"} {
+	for _, want := range []string{"тренировках в Тбилиси", "паделе", "теннисных кэмпах", "напишите вопрос"} {
 		if !strings.Contains(startMessage, want) {
 			t.Errorf("start message does not contain %q", want)
 		}
 	}
-	for _, want := range []string{"«Тренировки»", "«Кэмпы»", "«О Dzala»"} {
-		if !strings.Contains(menuMessage, want) {
-			t.Errorf("menu message does not contain %q", want)
-		}
+	if strings.Count(startMessage, ".") > 3 {
+		t.Errorf("start message is too long: %q", startMessage)
 	}
 }
 
-func TestCampKeyboardsKeepMainMenuAvailable(t *testing.T) {
+func TestCampKeyboardsContainTopicsAndBackNavigation(t *testing.T) {
 	selected := selectedCampKeyboard("tbilisi").InlineKeyboard
-	if len(selected) != 3 || selected[0][0].CallbackData != campInfoCallbackPrefix+"tbilisi" || selected[2][0].CallbackData != menuCallbackData {
-		t.Errorf("selectedCampKeyboard() = %+v", selected)
+	if len(selected) != 6 {
+		t.Fatalf("selectedCampKeyboard() rows = %d, want 6", len(selected))
+	}
+	for _, want := range []string{
+		campTopicCallbackPrefix + "tbilisi:program",
+		campTopicCallbackPrefix + "tbilisi:dates_price",
+		campTopicCallbackPrefix + "tbilisi:stay",
+		campTopicCallbackPrefix + "tbilisi:coaches",
+		campTopicCallbackPrefix + "tbilisi:practical",
+	} {
+		found := false
+		for _, row := range selected {
+			for _, button := range row {
+				if button.CallbackData == want {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("selectedCampKeyboard() does not contain %q", want)
+		}
+	}
+	if selected[3][0].CallbackData != campsCallbackData || selected[4][0].CallbackData != operatorCallbackData || selected[5][0].CallbackData != menuCallbackData {
+		t.Errorf("selectedCampKeyboard() = %+v, want back, operator and main menu at the end", selected)
 	}
 
 	info := campInfoKeyboard("tbilisi").InlineKeyboard
-	if len(info) != 3 || info[0][0].CallbackData != campDetailsCallbackPrefix+"tbilisi" || info[2][0].CallbackData != menuCallbackData {
-		t.Errorf("campInfoKeyboard() = %+v", info)
+	if info[0][0].CallbackData != campTopicCallbackPrefix+"tbilisi:program" {
+		t.Errorf("campInfoKeyboard() = %+v, want the new topic navigation", info)
+	}
+}
+
+func TestContextKeyboardMatchesSelectedSection(t *testing.T) {
+	training := contextKeyboard(chatState{section: sectionTraining, topic: "Падел"}).InlineKeyboard
+	if training[0][0].CallbackData != trainingTopicCallbackPrefix+"tennis" {
+		t.Errorf("training context keyboard = %+v", training)
+	}
+
+	camp := contextKeyboard(chatState{section: sectionCamps, campID: "tbilisi"}).InlineKeyboard
+	if camp[0][0].CallbackData != campTopicCallbackPrefix+"tbilisi:program" {
+		t.Errorf("camp context keyboard = %+v", camp)
+	}
+
+	general := contextKeyboard(chatState{}).InlineKeyboard
+	if general[0][0].CallbackData != operatorCallbackData || general[1][0].CallbackData != menuCallbackData {
+		t.Errorf("general context keyboard = %+v", general)
 	}
 }
 

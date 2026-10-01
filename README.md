@@ -26,7 +26,7 @@ knowledge base is not allowed to answer.
    knowledge base path resolves:
 
    ```bash
-   go run ./cmd/bot
+   /Users/dimitri_lda/sdk/go1.27.1/bin/go run ./cmd/bot
    ```
 
 The knowledge base is read once at startup. The bot refuses to start when the
@@ -57,31 +57,30 @@ error summary; API keys and client data are never logged.
 
 ## Client flow
 
-1. `/start` starts a session with a short overview of the Tbilisi school,
-   regular tennis and padel training, and camps. It shows «Кэмпы», «Тренировки»,
-   «Другой вопрос» and «О Dzala». `/start` and `/exit` are registered in
+1. `/start` introduces «ИИ-помощник Dzala» and shows «Тренировки», «Кэмпы»,
+   «О Dzala» and «Связаться с оператором». `/start` and `/exit` are registered in
    Telegram's slash-command menu. A plain text message sent before `/start` starts
    a session, shows the menu and is then processed as the first question.
-2. «Кэмпы» opens the three destinations. Choosing one stores it for the session
-   and shows «О кэмпе», «Связаться с оператором» and «Главное меню». «О кэмпе»
-   opens a short card followed by an option to view detailed information.
-3. «Тренировки» shows a short regular-training card; «О Dzala» shows a short
-   school card. Both select an explicit conversation section, invite a free-text
-   AI question and keep operator and main-menu actions available.
-4. Any plain text message is treated as a question. The bot sends the knowledge
-   base, active section, selected camp, bounded in-memory session history and
-   current question to OpenRouter and expects a strict JSON action: `answer`,
-   `clarify` or `handoff`.
-5. `answer` and `clarify` replies carry operator and main-menu buttons. Questions
-   about booking, availability, payment, discounts, refunds, cancellation, visas,
-   flights, medical limitations or individual conditions go to an operator
-   without an AI call.
-6. If an enabled AI request fails, times out or returns an invalid response, the
-   bot immediately creates an operator ticket without asking the client to confirm.
-   When AI is not configured at all, recognized camp and topic words may still use
-   a local knowledge-based hint.
-7. `/exit` closes an active operator ticket, notifies the operator group and
-   clears the current session. The next plain text message starts a new session.
+2. «Тренировки» opens topic buttons for tennis, padel, children, adults, coaches,
+   prices and locations. Topic cards keep back-to-training, operator and main-menu
+   navigation available.
+3. «Кэмпы» opens the three destinations. Choosing one immediately shows its short
+   card and topic buttons for program, dates and price, accommodation, coaches and
+   practical information. Every camp card has back-to-camps navigation.
+4. Any plain text message is treated as a question. While OpenRouter is working,
+   Telegram shows a typing action. The request contains the knowledge base, active
+   section, selected topic, selected camp, bounded session history and current
+   question, and expects `answer`, `clarify` or `handoff`.
+5. `answer` and `clarify` replies carry contextual training or camp actions.
+   Questions about booking, availability, payment, discounts, refunds,
+   cancellation, visas, flights, medical limitations or individual conditions go
+   to an operator without an AI call.
+6. An operator ticket includes the selected section, topic and camp together with
+   the question and complete transcript. If the AI request fails, times out or
+   returns an invalid response, the ticket is created immediately.
+7. When AI is not configured, recognized camp and topic words may still use a
+   local knowledge-based hint. `/exit` closes an active operator ticket, notifies
+   the operator group and clears the current session.
 
 ## Operator flow
 

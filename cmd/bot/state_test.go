@@ -35,17 +35,30 @@ func TestSelectCampRemembersChoice(t *testing.T) {
 
 func TestSelectSectionClearsCampContext(t *testing.T) {
 	state := newStore()
-	state.selectCamp(7, "tbilisi")
+	state.selectTopic(7, sectionCamps, "Программа", "tbilisi")
 	state.selectSection(7, sectionTraining)
 
 	chat := state.chat(7)
-	if chat.section != sectionTraining || chat.campID != "" {
-		t.Errorf("chat = %+v, want training section without a selected camp", chat)
+	if chat.section != sectionTraining || chat.topic != "" || chat.campID != "" {
+		t.Errorf("chat = %+v, want training section without a topic or selected camp", chat)
 	}
 
 	state.selectSection(7, sectionGeneral)
-	if chat = state.chat(7); chat.section != "" || chat.campID != "" {
-		t.Errorf("chat = %+v, want general context without a selected camp", chat)
+	if chat = state.chat(7); chat.section != "" || chat.topic != "" || chat.campID != "" {
+		t.Errorf("chat = %+v, want general context without a topic or selected camp", chat)
+	}
+}
+
+func TestSelectTopicIsCopiedToTicket(t *testing.T) {
+	state := newStore()
+	state.selectTopic(7, sectionTraining, "Падел", "")
+
+	created, ok := state.createTicket(7, "", "Когда есть занятия?", "")
+	if !ok {
+		t.Fatal("createTicket() created = false, want true")
+	}
+	if created.section != sectionTraining || created.topic != "Падел" || created.campTitle != "" {
+		t.Errorf("ticket = %+v, want the selected training topic", created)
 	}
 }
 

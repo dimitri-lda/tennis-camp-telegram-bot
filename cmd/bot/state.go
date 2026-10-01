@@ -38,6 +38,7 @@ type sessionMessage struct {
 
 type chatState struct {
 	section       string
+	topic         string
 	campID        string
 	stage         dialogStage
 	lastQuestion  string
@@ -50,6 +51,8 @@ type chatState struct {
 type ticket struct {
 	id            int64
 	clientChatID  int64
+	section       string
+	topic         string
 	campTitle     string
 	question      string
 	aiAnswer      string
@@ -172,6 +175,7 @@ func (s *store) update(chatID int64, mutate func(*chatState)) {
 func (s *store) selectSection(chatID int64, section string) {
 	s.update(chatID, func(state *chatState) {
 		state.section = section
+		state.topic = ""
 		state.campID = ""
 		state.stage = stageIdle
 		state.lastQuestion = ""
@@ -182,6 +186,18 @@ func (s *store) selectSection(chatID int64, section string) {
 func (s *store) selectCamp(chatID int64, campID string) {
 	s.update(chatID, func(state *chatState) {
 		state.section = sectionCamps
+		state.topic = ""
+		state.campID = campID
+		state.stage = stageIdle
+		state.lastQuestion = ""
+		state.lastAnswer = ""
+	})
+}
+
+func (s *store) selectTopic(chatID int64, section, topic, campID string) {
+	s.update(chatID, func(state *chatState) {
+		state.section = section
+		state.topic = topic
 		state.campID = campID
 		state.stage = stageIdle
 		state.lastQuestion = ""
@@ -202,6 +218,8 @@ func (s *store) createTicket(clientChatID int64, campTitle, question, aiAnswer s
 	created := ticket{
 		id:           s.lastTicketID,
 		clientChatID: clientChatID,
+		section:      state.section,
+		topic:        state.topic,
 		campTitle:    campTitle,
 		question:     question,
 		aiAnswer:     aiAnswer,

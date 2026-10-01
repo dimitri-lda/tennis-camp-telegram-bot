@@ -13,6 +13,7 @@ import (
 
 func TestSystemPromptSeparatesDestinationReferenceFromCampTerms(t *testing.T) {
 	for _, instruction := range []string{
+		"ИИ-помощник Dzala",
 		"По общей справочной информации о направлении",
 		"Не выдавай такую информацию за условие кэмпа Dzala",
 		"проверить прогноз",
@@ -116,7 +117,7 @@ func TestAskSendsKnowledgeCampPreviousTurnAndSchema(t *testing.T) {
 		{role: sessionRoleUser, text: "А какие там тренировки?"},
 		{role: sessionRoleAssistant, text: "От 3 до 5 часов тенниса ежедневно."},
 	}
-	decision, err := client.ask(context.Background(), "База знаний про кэмпы", sectionCamps, "Тбилиси, Грузия", history, "Стоит ли мне туда ехать?")
+	decision, err := client.ask(context.Background(), "База знаний про кэмпы", sectionCamps, "Программа", "Тбилиси, Грузия", history, "Стоит ли мне туда ехать?")
 	if err != nil {
 		t.Fatalf("ask() error = %v", err)
 	}
@@ -142,8 +143,8 @@ func TestAskSendsKnowledgeCampPreviousTurnAndSchema(t *testing.T) {
 			t.Errorf("history message %d = %+v, want %+v", index, request.Messages[index+1], want)
 		}
 	}
-	if !strings.Contains(request.Messages[5].Content, "Активный раздел: Кэмпы") || !strings.Contains(request.Messages[5].Content, "Тбилиси, Грузия") || !strings.Contains(request.Messages[5].Content, "Стоит ли мне туда ехать?") {
-		t.Errorf("current user message = %q, want section, camp and current question", request.Messages[5].Content)
+	if !strings.Contains(request.Messages[5].Content, "Активный раздел: Кэмпы") || !strings.Contains(request.Messages[5].Content, "Выбранная тема: Программа") || !strings.Contains(request.Messages[5].Content, "Тбилиси, Грузия") || !strings.Contains(request.Messages[5].Content, "Стоит ли мне туда ехать?") {
+		t.Errorf("current user message = %q, want section, topic, camp and current question", request.Messages[5].Content)
 	}
 	if request.ResponseFormat.Type != "json_schema" || !request.ResponseFormat.JSONSchema.Strict {
 		t.Errorf("response format = %+v, want strict JSON schema", request.ResponseFormat)
@@ -181,7 +182,7 @@ func TestAskRetriesWhenModelIgnoresSchema(t *testing.T) {
 	client := newAIClient("test-key", "")
 	client.endpoint = server.URL
 
-	decision, err := client.ask(context.Background(), "knowledge", sectionTraining, "", nil, "Кто тренер?")
+	decision, err := client.ask(context.Background(), "knowledge", sectionTraining, "Тренеры", "", nil, "Кто тренер?")
 	if err != nil {
 		t.Fatalf("ask() error = %v", err)
 	}
@@ -192,8 +193,8 @@ func TestAskRetriesWhenModelIgnoresSchema(t *testing.T) {
 		t.Fatalf("requests = %d, want a strict attempt and a JSON-object retry", len(requests))
 	}
 	lastMessage := requests[0].Messages[len(requests[0].Messages)-1].Content
-	if !strings.Contains(lastMessage, "Активный раздел: Тренировки в Тбилиси") || !strings.Contains(lastMessage, "Кэмп не выбран") {
-		t.Errorf("current user message = %q, want the training section without a selected camp", lastMessage)
+	if !strings.Contains(lastMessage, "Активный раздел: Тренировки в Тбилиси") || !strings.Contains(lastMessage, "Выбранная тема: Тренеры") || !strings.Contains(lastMessage, "Выбранный кэмп: не выбран") {
+		t.Errorf("current user message = %q, want the training topic without a selected camp", lastMessage)
 	}
 	if requests[0].ResponseFormat.Type != "json_schema" || requests[0].ResponseFormat.JSONSchema == nil {
 		t.Errorf("first attempt = %+v, want strict JSON schema", requests[0].ResponseFormat)
@@ -232,7 +233,7 @@ func TestAskKeepsOnlyRecentHistory(t *testing.T) {
 		}
 		history = append(history, sessionMessage{role: role, text: fmt.Sprintf("сообщение %d", index)})
 	}
-	if _, err := client.ask(context.Background(), "knowledge", "", "", history, "последний вопрос"); err != nil {
+	if _, err := client.ask(context.Background(), "knowledge", "", "", "", history, "последний вопрос"); err != nil {
 		t.Fatalf("ask() error = %v", err)
 	}
 
@@ -256,7 +257,7 @@ func TestAskFailsOnServerError(t *testing.T) {
 	client := newAIClient("test-key", "")
 	client.endpoint = server.URL
 
-	if _, err := client.ask(context.Background(), "knowledge", "", "", nil, "вопрос"); err == nil {
+	if _, err := client.ask(context.Background(), "knowledge", "", "", "", nil, "вопрос"); err == nil {
 		t.Error("ask() error = nil, want an error for HTTP 500")
 	}
 }
@@ -267,13 +268,10 @@ func TestAIClientWithoutAPIKeyIsDisabled(t *testing.T) {
 		t.Error("enabled() = true, want false without OPENROUTER_API_KEY")
 	}
 	const wantModel = "nvidia/nemotron-3-super-120b-a12b:free"
-	if defaultAIModel != wantModel {
-		t.Errorf("defaultAIModel = %q, want %q", defaultAIModel, wantModel)
-	}
 	if client.model != wantModel {
 		t.Errorf("model = %q, want %q", client.model, wantModel)
 	}
-	if _, err := client.ask(context.Background(), "knowledge", "", "", nil, "вопрос"); err == nil {
+	if _, err := client.ask(context.Background(), "knowledge", "", "", "", nil, "вопрос"); err == nil {
 		t.Error("ask() error = nil, want an error without OPENROUTER_API_KEY")
 	}
 }

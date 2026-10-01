@@ -97,6 +97,44 @@ func TestAboutInfoUsesKnowledgeBase(t *testing.T) {
 	}
 }
 
+func TestTrainingTopicsUseKnowledgeBase(t *testing.T) {
+	knowledge, err := loadKnowledge(filepath.Join("..", "..", defaultKnowledgeFile))
+	if err != nil {
+		t.Fatalf("loadKnowledge() error = %v", err)
+	}
+	for _, topic := range trainingTopics {
+		label, text, ok := trainingTopicInfo(knowledge, topic.id)
+		if !ok {
+			t.Errorf("trainingTopicInfo(%q) ok = false", topic.id)
+			continue
+		}
+		if label != topic.label || !strings.Contains(text, topic.label) {
+			t.Errorf("trainingTopicInfo(%q) = %q, %q, want label in text", topic.id, label, text)
+		}
+	}
+}
+
+func TestCampTopicsUseSelectedCampOnly(t *testing.T) {
+	knowledge, err := loadKnowledge(filepath.Join("..", "..", defaultKnowledgeFile))
+	if err != nil {
+		t.Fatalf("loadKnowledge() error = %v", err)
+	}
+	selected, _ := campByID("tbilisi")
+	for _, topic := range campTopics {
+		label, text, ok := campTopicInfo(knowledge, selected, topic.id)
+		if !ok {
+			t.Errorf("campTopicInfo(%q) ok = false", topic.id)
+			continue
+		}
+		if label != topic.label || !strings.Contains(text, topic.label) {
+			t.Errorf("campTopicInfo(%q) = %q, %q, want label in text", topic.id, label, text)
+		}
+		if strings.Contains(text, "Кейптаун") {
+			t.Errorf("campTopicInfo(%q) leaked another camp: %q", topic.id, text)
+		}
+	}
+}
+
 func TestCampSummaryUsesKnowledgeBase(t *testing.T) {
 	selected, ok := campByID("tbilisi")
 	if !ok {

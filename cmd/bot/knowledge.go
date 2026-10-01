@@ -22,6 +22,30 @@ var camps = []camp{
 	{id: "cape_town", label: "🇿🇦 Кейптаун", heading: "Кейптаун"},
 }
 
+type knowledgeTopic struct {
+	id       string
+	label    string
+	headings []string
+}
+
+var trainingTopics = []knowledgeTopic{
+	{id: "tennis", label: "Большой теннис", headings: []string{"Форматы и уровни большого тенниса", "Содержание занятий"}},
+	{id: "padel", label: "Падел", headings: []string{"Падел"}},
+	{id: "children", label: "Детские группы", headings: []string{"Детские группы"}},
+	{id: "adults", label: "Взрослые группы", headings: []string{"Взрослые группы"}},
+	{id: "coaches", label: "Тренеры", headings: []string{"Тренеры по большому теннису"}},
+	{id: "prices", label: "Цены", headings: []string{"Краткий ориентир по ценам"}},
+	{id: "locations", label: "Площадки", headings: []string{"Площадки"}},
+}
+
+var campTopics = []knowledgeTopic{
+	{id: "program", label: "Программа", headings: []string{"Тренировочная программа"}},
+	{id: "dates_price", label: "Даты и стоимость", headings: []string{"Даты", "Стоимость", "Что входит в стоимость"}},
+	{id: "stay", label: "Проживание", headings: []string{"Проживание"}},
+	{id: "coaches", label: "Тренеры", headings: []string{"Тренерская команда"}},
+	{id: "practical", label: "Практическая информация"},
+}
+
 func campByID(id string) (camp, bool) {
 	for _, item := range camps {
 		if item.id == id {
@@ -29,6 +53,15 @@ func campByID(id string) (camp, bool) {
 		}
 	}
 	return camp{}, false
+}
+
+func topicByID(topics []knowledgeTopic, id string) (knowledgeTopic, bool) {
+	for _, topic := range topics {
+		if topic.id == id {
+			return topic, true
+		}
+	}
+	return knowledgeTopic{}, false
 }
 
 // loadKnowledge reads the knowledge base once at startup.
@@ -78,6 +111,79 @@ func sectionIntro(knowledge, title string) (string, bool) {
 	}
 	text := plainText(strings.Join(lines[start:end], "\n"))
 	return text, text != ""
+}
+
+func sectionBody(document, title string, level int) (string, bool) {
+	lines := strings.Split(document, "\n")
+	start := -1
+	for index, line := range lines {
+		if headingLevel(line) == level && strings.TrimSpace(strings.TrimLeft(line, "#")) == title {
+			start = index + 1
+			break
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+
+	end := len(lines)
+	for index := start; index < len(lines); index++ {
+		if nextLevel := headingLevel(lines[index]); nextLevel > 0 && nextLevel <= level {
+			end = index
+			break
+		}
+	}
+	body := strings.TrimSpace(strings.Join(lines[start:end], "\n"))
+	return body, body != ""
+}
+
+func topicInfo(section string, topic knowledgeTopic, level int) (string, bool) {
+	parts := make([]string, 0, len(topic.headings))
+	for _, heading := range topic.headings {
+		body, ok := sectionBody(section, heading, level)
+		if !ok {
+			continue
+		}
+		part := heading + "\n" + body
+		if len(topic.headings) == 1 && heading == topic.label {
+			part = body
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	return plainText(topic.label + "\n\n" + strings.Join(parts, "\n\n")), true
+}
+
+func trainingTopicInfo(knowledge, topicID string) (string, string, bool) {
+	topic, ok := topicByID(trainingTopics, topicID)
+	if !ok {
+		return "", "", false
+	}
+	section, ok := sectionBody(knowledge, sectionTraining, 2)
+	if !ok {
+		return "", "", false
+	}
+	text, ok := topicInfo(section, topic, 3)
+	return topic.label, text, ok
+}
+
+func campTopicInfo(knowledge string, selected camp, topicID string) (string, string, bool) {
+	topic, ok := topicByID(campTopics, topicID)
+	if !ok {
+		return "", "", false
+	}
+	if topic.id == "practical" {
+		text := "Практическая информация\n\nНапишите вопрос о погоде, одежде, валюте, розетках, связи, безопасности или подготовке к поездке. ИИ-помощник Dzala даст общую справочную информацию о направлении, а не условия кэмпа."
+		return topic.label, text, true
+	}
+	_, section, ok := campSection(knowledge, selected.heading)
+	if !ok {
+		return "", "", false
+	}
+	text, ok := topicInfo(section, topic, 4)
+	return topic.label, text, ok
 }
 
 // campSection returns the title and the body of a "### <heading>" block.
