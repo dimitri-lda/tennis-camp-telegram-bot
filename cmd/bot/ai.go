@@ -75,10 +75,11 @@ type aiDecision struct {
 }
 
 type aiClient struct {
-	httpClient *http.Client
-	endpoint   string
-	apiKey     string
-	model      string
+	httpClient    *http.Client
+	endpoint      string
+	apiKey        string
+	model         string
+	fallbackModel string
 }
 
 type openRouterRequest struct {
@@ -138,19 +139,37 @@ type openRouterResponse struct {
 }
 
 func newAIClient(apiKey, model string) *aiClient {
+	return newAIClientWithFallback(apiKey, model, "")
+}
+
+func newAIClientWithFallback(apiKey, model, fallbackModel string) *aiClient {
 	if strings.TrimSpace(model) == "" {
 		model = defaultAIModel
 	}
+	model = strings.TrimSpace(model)
+	fallbackModel = strings.TrimSpace(fallbackModel)
+	if fallbackModel == model {
+		fallbackModel = ""
+	}
 	return &aiClient{
-		httpClient: &http.Client{Timeout: aiRequestTimeout},
-		endpoint:   openRouterEndpoint,
-		apiKey:     strings.TrimSpace(apiKey),
-		model:      strings.TrimSpace(model),
+		httpClient:    &http.Client{Timeout: aiRequestTimeout},
+		endpoint:      openRouterEndpoint,
+		apiKey:        strings.TrimSpace(apiKey),
+		model:         model,
+		fallbackModel: fallbackModel,
 	}
 }
 
 func (c *aiClient) enabled() bool {
 	return c != nil && c.apiKey != ""
+}
+
+func (c *aiClient) configuredModels() []string {
+	models := []string{c.model}
+	if c.fallbackModel != "" {
+		models = append(models, c.fallbackModel)
+	}
+	return models
 }
 
 func decisionResponseFormat() openRouterResponseFormat {
@@ -209,26 +228,30 @@ func (c *aiClient) ask(ctx context.Context, knowledge, selectedSection, selected
 	messages = append(messages, openRouterMessage{Role: "user", Content: userContent})
 
 	var lastErr error
-	for _, attempt := range []struct {
-		format            openRouterResponseFormat
-		reasoning         *openRouterReasoning
-		requireParameters bool
-	}{
-		{format: decisionResponseFormat(), reasoning: &openRouterReasoning{Effort: "low", Exclude: true}, requireParameters: true},
-		{format: openRouterResponseFormat{Type: "json_object"}},
-	} {
-		content, model, err := c.complete(ctx, messages, attempt.format, attempt.reasoning, attempt.requireParameters)
-		if err == nil {
-			decision, parseErr := parseAIDecision(content)
-			if parseErr == nil {
-				return decision, nil
+	for _, configuredModel := range c.configuredModels() {
+		for _, attempt := range []struct {
+			format            openRouterResponseFormat
+			reasoning         *openRouterReasoning
+			requireParameters bool
+		}{
+			{format: decisionResponseFormat(), reasoning: &openRouterReasoning{Effort: "low", Exclude: true}, requireParameters: true},
+			{format: openRouterResponseFormat{Type: "json_object"}},
+		} {
+			content, responseModel, err := c.complete(ctx, configuredModel, messages, attempt.format, attempt.reasoning, attempt.requireParameters)
+			if err != nil {
+				err = fmt.Errorf("%w (model %s)", err, configuredModel)
+			} else {
+				decision, parseErr := parseAIDecision(content)
+				if parseErr == nil {
+					return decision, nil
+				}
+				err = fmt.Errorf("%w (model %s)", parseErr, responseModel)
 			}
-			err = fmt.Errorf("%w (model %s)", parseErr, model)
-		}
 
-		lastErr = err
-		if ctx.Err() != nil {
-			break
+			lastErr = err
+			if ctx.Err() != nil {
+				return aiDecision{}, lastErr
+			}
 		}
 	}
 	return aiDecision{}, lastErr
@@ -243,9 +266,9 @@ func recentHistory(history []sessionMessage) []sessionMessage {
 }
 
 // complete performs one OpenRouter call and returns the answer with the model that produced it.
-func (c *aiClient) complete(ctx context.Context, messages []openRouterMessage, format openRouterResponseFormat, reasoning *openRouterReasoning, requireParameters bool) (content, model string, resultErr error) {
+func (c *aiClient) complete(ctx context.Context, model string, messages []openRouterMessage, format openRouterResponseFormat, reasoning *openRouterReasoning, requireParameters bool) (content, responseModel string, resultErr error) {
 	payload, err := json.Marshal(openRouterRequest{
-		Model:          c.model,
+		Model:          model,
 		Messages:       messages,
 		MaxTokens:      aiMaxTokens,
 		Temperature:    0.2,
@@ -271,7 +294,7 @@ func (c *aiClient) complete(ctx context.Context, messages []openRouterMessage, f
 	}
 	defer func() {
 		if err := response.Body.Close(); err != nil && resultErr == nil {
-			content, model = "", ""
+			content, responseModel = "", ""
 			resultErr = fmt.Errorf("close OpenRouter response: %w", err)
 		}
 	}()

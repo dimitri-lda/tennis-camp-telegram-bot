@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/go-telegram/bot"
@@ -254,13 +255,34 @@ func TestTelegramErrorSummaryDoesNotExposeErrorText(t *testing.T) {
 	}
 }
 
-func TestBotCommandsIncludeStartAndExit(t *testing.T) {
+func TestBotCommandsIncludeStartHelpAndExit(t *testing.T) {
 	commands := botCommands()
-	if len(commands) != 2 {
-		t.Fatalf("botCommands() returned %d commands, want 2", len(commands))
+	if len(commands) != 3 {
+		t.Fatalf("botCommands() returned %d commands, want 3", len(commands))
 	}
-	if commands[0].Command != "start" || commands[1].Command != "exit" {
-		t.Errorf("botCommands() = %+v, want start and exit", commands)
+	if commands[0].Command != "start" || commands[1].Command != "help" || commands[2].Command != "exit" {
+		t.Errorf("botCommands() = %+v, want start, help and exit", commands)
+	}
+}
+
+func TestRuntimeConfigParsing(t *testing.T) {
+	if got, err := parseDurationOrDefault("", 24*time.Hour); err != nil || got != 24*time.Hour {
+		t.Errorf("parseDurationOrDefault(empty) = %v, %v", got, err)
+	}
+	if got, err := parseDurationOrDefault("90m", 24*time.Hour); err != nil || got != 90*time.Minute {
+		t.Errorf("parseDurationOrDefault(90m) = %v, %v", got, err)
+	}
+	if _, err := parseDurationOrDefault("tomorrow", time.Hour); err == nil {
+		t.Error("parseDurationOrDefault(invalid) error = nil")
+	}
+	if got, err := parsePositiveIntOrDefault("", 30); err != nil || got != 30 {
+		t.Errorf("parsePositiveIntOrDefault(empty) = %d, %v", got, err)
+	}
+	if got, err := parsePositiveIntOrDefault("15", 30); err != nil || got != 15 {
+		t.Errorf("parsePositiveIntOrDefault(15) = %d, %v", got, err)
+	}
+	if _, err := parsePositiveIntOrDefault("0", 30); err == nil {
+		t.Error("parsePositiveIntOrDefault(0) error = nil")
 	}
 }
 

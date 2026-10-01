@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -45,27 +46,32 @@ const (
 
 // Client messages.
 const (
-	aiPromptMessage         = "ИИ-помощник Dzala ответит на вопрос прямо в чате. Если потребуется уточнение, подключу оператора."
-	startMessage            = "Привет! Я ИИ-помощник Dzala. Помогу узнать о тренировках в Тбилиси, паделе и теннисных кэмпах. Выберите раздел или напишите вопрос."
-	menuMessage             = "Выберите раздел или напишите вопрос. ИИ-помощник Dzala ответит прямо в чате."
-	campsMessage            = "Выберите кэмп — сразу покажу краткую информацию:"
-	trainingUnavailable     = "Информация о тренировках сейчас недоступна. Могу связать вас с оператором."
-	aboutUnavailable        = "Информация о Dzala сейчас недоступна. Могу связать вас с оператором."
-	askPromptMessage        = "Напишите вопрос о Dzala, регулярных тренировках, паделе или теннисных кэмпах."
-	topicUnavailableMessage = "Информация по этой теме сейчас недоступна. Могу связать вас с оператором."
-	campUnavailableMessage  = "Описание этого кэмпа сейчас недоступно. Могу передать ваш вопрос оператору."
-	questionLengthMessage   = "Вопрос должен содержать от 1 до 1000 символов."
-	handoffDoneMessage      = "Передал ваш вопрос оператору. Ответ придёт сюда, в этот чат."
-	operatorPromptMessage   = "Напишите вопрос, который нужно передать оператору."
-	operatorBusyMessage     = "Ваш вопрос уже у оператора. Напишите сообщение — я передам его."
-	operatorsDownMessage    = "Сейчас не удалось подключить оператора. Попробуйте немного позже."
-	relayFailedMessage      = "Не получилось передать сообщение оператору. Попробуйте ещё раз немного позже."
-	ticketClosedMessage     = "Диалог с оператором завершён. Если появится новый вопрос, просто напишите его."
-	textOnlyMessage         = "Пока я понимаю только текстовые сообщения. Опишите, пожалуйста, вопрос словами."
-	textOnlyOperatorMessage = "Пока поддерживается только текст, поэтому я не смог передать это оператору."
-	sessionClosedMessage    = "Сессия завершена. Чтобы начать новую, отправьте любое сообщение или команду /start."
-	clientExitedNotice      = "Клиент завершил сессию командой /exit."
-	clientRestartedNotice   = "Клиент начал новую сессию командой /start."
+	aiPromptMessage          = "ИИ-помощник Dzala ответит на вопрос прямо в чате. Если потребуется уточнение, подключу оператора."
+	startMessage             = "Привет! Я ИИ-помощник Dzala. Помогу узнать о тренировках в Тбилиси, паделе и теннисных кэмпах. Выберите раздел или напишите вопрос."
+	menuMessage              = "Выберите раздел или напишите вопрос. ИИ-помощник Dzala ответит прямо в чате."
+	campsMessage             = "Выберите кэмп — сразу покажу краткую информацию:"
+	trainingUnavailable      = "Информация о тренировках сейчас недоступна. Могу связать вас с оператором."
+	aboutUnavailable         = "Информация о Dzala сейчас недоступна. Могу связать вас с оператором."
+	askPromptMessage         = "Напишите вопрос о Dzala, регулярных тренировках, паделе или теннисных кэмпах."
+	topicUnavailableMessage  = "Информация по этой теме сейчас недоступна. Могу связать вас с оператором."
+	campUnavailableMessage   = "Описание этого кэмпа сейчас недоступно. Могу передать ваш вопрос оператору."
+	questionLengthMessage    = "Вопрос должен содержать от 1 до 1000 символов."
+	handoffDoneMessage       = "Передал ваш вопрос оператору. Ответ придёт сюда, в этот чат."
+	operatorPromptMessage    = "Напишите вопрос, который нужно передать оператору."
+	operatorBusyMessage      = "Ваш вопрос уже у оператора. Напишите сообщение — я передам его."
+	operatorsDownMessage     = "Сейчас не удалось подключить оператора. Попробуйте немного позже."
+	relayFailedMessage       = "Не получилось передать сообщение оператору. Попробуйте ещё раз немного позже."
+	ticketClosedMessage      = "Диалог с оператором завершён. Если появится новый вопрос, просто напишите его."
+	textOnlyMessage          = "Пока я понимаю только текстовые сообщения. Опишите, пожалуйста, вопрос словами."
+	textOnlyOperatorMessage  = "Пока поддерживается только текст, поэтому я не смог передать это оператору."
+	sessionClosedMessage     = "Сессия завершена. Чтобы начать новую, отправьте любое сообщение или команду /start."
+	clientExitedNotice       = "Клиент завершил сессию командой /exit."
+	clientRestartedNotice    = "Клиент начал новую сессию командой /start."
+	helpMessage              = "Как пользоваться ботом:\n\n• /start — начать новую сессию\n• выберите «Тренировки», «Кэмпы» или «О Dzala»\n• напишите вопрос прямо в чат\n• «Связаться с оператором» — передать диалог человеку\n• /exit — завершить сессию"
+	aiBusyMessage            = "Я ещё готовлю ответ на предыдущий вопрос. Подождите немного."
+	aiTooSoonMessage         = "Подождите несколько секунд перед следующим вопросом."
+	aiQuestionLimitMessage   = "Лимит вопросов к ИИ в этой сессии исчерпан. Могу связать вас с оператором."
+	idleSessionClosedMessage = "Сессия автоматически завершена из-за отсутствия активности. Чтобы начать новую, отправьте любое сообщение или /start."
 )
 
 // Operator group messages.
@@ -79,10 +85,22 @@ const (
 )
 
 type app struct {
-	store         *store
-	knowledge     string
-	ai            *aiClient
-	managerChatID int64
+	store                      *store
+	knowledge                  string
+	ai                         *aiClient
+	managerChatID              int64
+	aiSessionIdleTimeout       time.Duration
+	operatorSessionIdleTimeout time.Duration
+	sessionSweepInterval       time.Duration
+	aiQuestionInterval         time.Duration
+	aiMaxQuestions             int
+	stats                      *botStats
+	sessionLocks               sync.Map
+}
+
+func (a *app) sessionLock(chatID int64) *sync.Mutex {
+	value, _ := a.sessionLocks.LoadOrStore(chatID, &sync.Mutex{})
+	return value.(*sync.Mutex)
 }
 
 func (a *app) operatorsEnabled() bool {
@@ -90,9 +108,27 @@ func (a *app) operatorsEnabled() bool {
 }
 
 func (a *app) ensureSession(chatID int64) {
+	lock := a.sessionLock(chatID)
+	lock.Lock()
+	defer lock.Unlock()
 	if !a.store.sessionActive(chatID) {
 		a.store.startSession(chatID)
+		if a.stats != nil {
+			a.stats.sessionsStarted.Add(1)
+		}
 	}
+}
+
+func (a *app) aiLimits() (time.Duration, int) {
+	interval := a.aiQuestionInterval
+	if interval <= 0 {
+		interval = defaultAIQuestionInterval
+	}
+	maximum := a.aiMaxQuestions
+	if maximum <= 0 {
+		maximum = defaultAIMaxQuestions
+	}
+	return interval, maximum
 }
 
 func (a *app) startHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
@@ -103,8 +139,14 @@ func (a *app) startHandler(ctx context.Context, telegramBot *bot.Bot, update *mo
 		return
 	}
 
+	lock := a.sessionLock(update.Message.Chat.ID)
+	lock.Lock()
+	defer lock.Unlock()
 	a.finishSession(ctx, telegramBot, update.Message.Chat.ID, clientRestartedNotice)
 	a.store.startSession(update.Message.Chat.ID)
+	if a.stats != nil {
+		a.stats.sessionsStarted.Add(1)
+	}
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      update.Message.Chat.ID,
 		Text:        startMessage,
@@ -120,23 +162,118 @@ func (a *app) exitHandler(ctx context.Context, telegramBot *bot.Bot, update *mod
 		return
 	}
 
+	lock := a.sessionLock(update.Message.Chat.ID)
+	lock.Lock()
+	defer lock.Unlock()
 	a.finishSession(ctx, telegramBot, update.Message.Chat.ID, clientExitedNotice)
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: sessionClosedMessage})
 }
 
 func (a *app) finishSession(ctx context.Context, telegramBot *bot.Bot, chatID int64, operatorNotice string) {
-	current, hadTicket := a.store.endSession(chatID)
-	if !hadTicket {
+	a.publishSessionClosure(ctx, telegramBot, a.store.closeSession(chatID), operatorNotice)
+}
+
+func (a *app) publishSessionClosure(ctx context.Context, telegramBot *bot.Bot, closure sessionClosure, operatorNotice string) {
+	duration := closure.endedAt.Sub(closure.startedAt).Round(time.Minute)
+	if duration < time.Minute {
+		duration = time.Minute
+	}
+	operatorNotice += "\nПродолжительность: " + duration.String()
+	messageID := closure.auditMessageID
+	if closure.hadTicket {
+		messageID = closure.ticket.cardMessageID
+		a.updateCard(ctx, telegramBot, closure.ticket, nil)
+	} else if messageID != 0 {
+		card := strings.Replace(closure.auditCard, "Статус: отвечает ИИ", "Статус: завершена", 1)
+		if _, err := telegramBot.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:    a.managerChatID,
+			MessageID: messageID,
+			Text:      card,
+		}); err != nil {
+			logTelegramError("close AI session card", err)
+		}
+	}
+	if messageID == 0 {
 		return
 	}
-	a.updateCard(ctx, telegramBot, current, nil)
-	if current.cardMessageID != 0 {
-		sendMessage(ctx, telegramBot, &bot.SendMessageParams{
-			ChatID:          a.managerChatID,
-			Text:            operatorNotice,
-			ReplyParameters: &models.ReplyParameters{MessageID: current.cardMessageID, AllowSendingWithoutReply: true},
-		})
+	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
+		ChatID:          a.managerChatID,
+		Text:            operatorNotice,
+		ReplyParameters: &models.ReplyParameters{MessageID: messageID, AllowSendingWithoutReply: true},
+	})
+	a.sendSessionTranscript(ctx, telegramBot, closure.history, messageID, "Итоговая история сессии")
+}
+
+func (a *app) sessionTimeouts() (time.Duration, time.Duration, time.Duration) {
+	aiTimeout := a.aiSessionIdleTimeout
+	if aiTimeout <= 0 {
+		aiTimeout = defaultAISessionIdleTimeout
 	}
+	operatorTimeout := a.operatorSessionIdleTimeout
+	if operatorTimeout <= 0 {
+		operatorTimeout = defaultOperatorSessionIdleTimeout
+	}
+	sweep := a.sessionSweepInterval
+	if sweep <= 0 {
+		sweep = defaultSessionSweepInterval
+	}
+	return aiTimeout, operatorTimeout, sweep
+}
+
+func (a *app) runSessionSweeper(ctx context.Context, telegramBot *bot.Bot) {
+	aiTimeout, operatorTimeout, sweep := a.sessionTimeouts()
+	ticker := time.NewTicker(sweep)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			for _, chatID := range a.store.expiredChatIDs(now, aiTimeout, operatorTimeout) {
+				lock := a.sessionLock(chatID)
+				lock.Lock()
+				state := a.store.chat(chatID)
+				closure, ok := a.store.expireSessionIfIdle(chatID, state.sessionID, now, aiTimeout, operatorTimeout)
+				if ok {
+					if a.stats != nil {
+						a.stats.timeouts.Add(1)
+					}
+					a.publishSessionClosure(ctx, telegramBot, closure, "Сессия завершена из-за отсутствия активности.")
+					sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: idleSessionClosedMessage})
+				}
+				lock.Unlock()
+			}
+		}
+	}
+}
+
+func (a *app) helpHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
+	if update == nil || update.Message == nil {
+		return
+	}
+	if a.operatorsEnabled() && update.Message.Chat.ID == a.managerChatID {
+		return
+	}
+	sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: helpMessage, ReplyMarkup: mainMenuKeyboard()})
+}
+
+func (a *app) statsHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
+	if update == nil || update.Message == nil || !a.operatorsEnabled() || update.Message.Chat.ID != a.managerChatID {
+		return
+	}
+	var sessions, requests, successes, failures, handoffs, timeouts, busy, throttled uint64
+	if a.stats != nil {
+		sessions = a.stats.sessionsStarted.Load()
+		requests = a.stats.aiRequests.Load()
+		successes = a.stats.aiSuccess.Load()
+		failures = a.stats.aiFailure.Load()
+		handoffs = a.stats.handoffs.Load()
+		timeouts = a.stats.timeouts.Load()
+		busy = a.stats.busyRejected.Load()
+		throttled = a.stats.throttled.Load()
+	}
+	text := fmt.Sprintf("Статистика после запуска\n\nСессии: %d\nAI-запросы: %d\nУспешные ответы: %d\nОшибки AI: %d\nПередачи оператору: %d\nАвтозакрытия: %d\nОтклонено занятых: %d\nОграничено по частоте: %d", sessions, requests, successes, failures, handoffs, timeouts, busy, throttled)
+	sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: text})
 }
 
 func (a *app) chatIDHandler(ctx context.Context, telegramBot *bot.Bot, update *models.Update) {
@@ -359,6 +496,9 @@ func (a *app) operatorHandler(ctx context.Context, telegramBot *bot.Bot, update 
 	}
 
 	a.ensureSession(chatID)
+	lock := a.sessionLock(chatID)
+	lock.Lock()
+	defer lock.Unlock()
 	if _, active := a.store.activeTicket(chatID); active {
 		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorBusyMessage})
 		return
@@ -405,7 +545,7 @@ func (a *app) messageHandler(ctx context.Context, telegramBot *bot.Bot, update *
 	}
 
 	if !a.store.sessionActive(message.Chat.ID) {
-		a.store.startSession(message.Chat.ID)
+		a.ensureSession(message.Chat.ID)
 		sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 			ChatID:      message.Chat.ID,
 			Text:        startMessage,
@@ -413,17 +553,21 @@ func (a *app) messageHandler(ctx context.Context, telegramBot *bot.Bot, update *
 		})
 	}
 
+	lock := a.sessionLock(message.Chat.ID)
+	lock.Lock()
 	if current, active := a.store.activeTicket(message.Chat.ID); active {
 		a.store.appendHistory(message.Chat.ID, sessionRoleUser, text)
 		a.relayToOperators(ctx, telegramBot, current, text)
+		lock.Unlock()
 		return
 	}
-
 	if a.store.chat(message.Chat.ID).stage == stageAwaitingOperatorQuestion {
 		a.store.appendHistory(message.Chat.ID, sessionRoleUser, text)
 		a.openTicket(ctx, telegramBot, message.Chat.ID, message.From, text, "")
+		lock.Unlock()
 		return
 	}
+	lock.Unlock()
 
 	a.answerQuestion(ctx, telegramBot, message.Chat.ID, message.From, text)
 }
@@ -431,18 +575,17 @@ func (a *app) messageHandler(ctx context.Context, telegramBot *bot.Bot, update *
 // answerQuestion asks the AI or escalates to an operator.
 func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID int64, from *models.User, question string) {
 	state := a.store.chat(chatID)
-	history := state.history
-	a.store.appendHistory(chatID, sessionRoleUser, question)
-
 	switch planQuestion(question, a.ai.enabled(), a.operatorsEnabled()) {
 	case planAI:
 	case planOperator:
+		a.store.appendHistory(chatID, sessionRoleUser, question)
 		if !a.ai.enabled() && a.sendLocalFallback(ctx, telegramBot, chatID, question, state.campID) {
 			return
 		}
 		a.openTicket(ctx, telegramBot, chatID, from, question, "")
 		return
 	case planUnavailable:
+		a.store.appendHistory(chatID, sessionRoleUser, question)
 		if a.sendLocalFallback(ctx, telegramBot, chatID, question, state.campID) {
 			return
 		}
@@ -451,12 +594,39 @@ func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID i
 		return
 	}
 
-	selectedCamp := campTitle(a.knowledge, state.campID)
-	stopTyping := startTyping(ctx, telegramBot, chatID)
-	decision, err := a.ai.ask(ctx, a.knowledge, state.section, state.topic, selectedCamp, history, question)
+	aiCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	interval, maximum := a.aiLimits()
+	attempt, result := a.store.beginAI(chatID, time.Now(), interval, maximum, cancel)
+	if result != aiStartOK {
+		cancel()
+		a.rejectAIQuestion(ctx, telegramBot, chatID, question, result)
+		return
+	}
+	a.store.appendHistory(chatID, sessionRoleUser, question)
+	if a.stats != nil {
+		a.stats.aiRequests.Add(1)
+	}
+	a.ensureAISessionCard(ctx, telegramBot, chatID, from, question, attempt)
+
+	selectedCamp := campTitle(a.knowledge, attempt.campID)
+	stopTyping := startTyping(aiCtx, telegramBot, chatID)
+	decision, err := a.ai.ask(aiCtx, a.knowledge, attempt.section, attempt.topic, selectedCamp, attempt.history, question)
 	stopTyping()
+	lock := a.sessionLock(chatID)
+	lock.Lock()
+	defer lock.Unlock()
+	if !a.store.finishAI(chatID, attempt.sessionID) {
+		return
+	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			return
+		}
 		log.Printf("ask OpenRouter: %v", err)
+		if a.stats != nil {
+			a.stats.aiFailure.Add(1)
+		}
 		if a.operatorsEnabled() {
 			a.openTicket(ctx, telegramBot, chatID, from, question, "")
 			return
@@ -476,6 +646,9 @@ func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID i
 		return
 	}
 
+	if a.stats != nil {
+		a.stats.aiSuccess.Add(1)
+	}
 	a.store.update(chatID, func(state *chatState) {
 		state.stage = stageIdle
 		state.lastQuestion = question
@@ -485,8 +658,90 @@ func (a *app) answerQuestion(ctx context.Context, telegramBot *bot.Bot, chatID i
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        decision.Message,
-		ReplyMarkup: contextKeyboard(state),
+		ReplyMarkup: contextKeyboard(attempt),
 	})
+}
+
+func (a *app) recordHandoff() {
+	if a.stats != nil {
+		a.stats.handoffs.Add(1)
+	}
+}
+
+func (a *app) rejectAIQuestion(ctx context.Context, telegramBot *bot.Bot, chatID int64, question string, result aiStartResult) {
+	text := aiBusyMessage
+	switch result {
+	case aiStartBusy:
+		if a.stats != nil {
+			a.stats.busyRejected.Add(1)
+		}
+	case aiStartTooSoon:
+		text = aiTooSoonMessage
+		if a.stats != nil {
+			a.stats.throttled.Add(1)
+		}
+	case aiStartLimit:
+		text = aiQuestionLimitMessage
+		if a.stats != nil {
+			a.stats.throttled.Add(1)
+		}
+	case aiStartNoSession:
+		text = sessionClosedMessage
+	case aiStartOK:
+		return
+	}
+	if result != aiStartNoSession {
+		a.store.appendHistory(chatID, sessionRoleUser, question)
+		a.store.appendHistory(chatID, sessionRoleAssistant, text)
+	}
+	params := &bot.SendMessageParams{ChatID: chatID, Text: text}
+	if result == aiStartLimit {
+		params.ReplyMarkup = operatorAndMenuKeyboard()
+	}
+	sendMessage(ctx, telegramBot, params)
+}
+
+func (a *app) ensureAISessionCard(ctx context.Context, telegramBot *bot.Bot, chatID int64, from *models.User, question string, state chatState) {
+	if !a.operatorsEnabled() || state.auditMessageID != 0 {
+		return
+	}
+	section := state.section
+	if section == "" {
+		section = "Общий вопрос"
+	}
+	lines := []string{
+		fmt.Sprintf("AI-сессия №%d", state.sessionID),
+		"",
+		"Раздел: " + section,
+		"Начало: " + state.startedAt.Format("02.01.2006 15:04"),
+	}
+	if state.topic != "" {
+		lines = append(lines, "Тема: "+state.topic)
+	}
+	if title := campTitle(a.knowledge, state.campID); title != "" {
+		lines = append(lines, "Кэмп: "+title)
+	}
+	if from != nil {
+		if name := strings.TrimSpace(from.FirstName + " " + from.LastName); name != "" {
+			lines = append(lines, "Имя: "+name)
+		}
+		if from.Username != "" {
+			lines = append(lines, "Telegram: @"+from.Username)
+		}
+	}
+	lines = append(lines, "", "Первый вопрос: "+question, "", "Статус: отвечает ИИ")
+	card := strings.Join(lines, "\n")
+	sent, err := telegramBot.SendMessage(ctx, &bot.SendMessageParams{ChatID: a.managerChatID, Text: card})
+	if err != nil {
+		logTelegramError("send AI session card", err)
+		return
+	}
+	if !a.store.registerAuditCard(chatID, state.sessionID, sent.ID, card) {
+		closedCard := strings.Replace(card, "Статус: отвечает ИИ", "Статус: завершена до ответа", 1)
+		if _, err := telegramBot.EditMessageText(ctx, &bot.EditMessageTextParams{ChatID: a.managerChatID, MessageID: sent.ID, Text: closedCard}); err != nil {
+			logTelegramError("close stale AI session card", err)
+		}
+	}
 }
 
 // openTicket creates a ticket and publishes its card in the operator group.
@@ -508,23 +763,38 @@ func (a *app) openTicket(ctx context.Context, telegramBot *bot.Bot, chatID int64
 		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorBusyMessage})
 		return
 	}
+	a.recordHandoff()
 	card := ticketCard(created, from)
-
-	sent, err := telegramBot.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:      a.managerChatID,
-		Text:        card,
-		ReplyMarkup: ticketKeyboard(created.id),
-	})
-	if err != nil {
-		logTelegramError("send ticket to operators", err)
-		a.store.dropTicket(created.id)
-		a.store.appendHistory(chatID, sessionRoleAssistant, operatorsDownMessage)
-		sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorsDownMessage})
-		return
+	cardMessageID := created.cardMessageID
+	if cardMessageID != 0 {
+		if _, err := telegramBot.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:      a.managerChatID,
+			MessageID:   cardMessageID,
+			Text:        card,
+			ReplyMarkup: ticketKeyboard(created.id),
+		}); err != nil {
+			logTelegramError("convert AI session to ticket", err)
+			cardMessageID = 0
+		}
+	}
+	if cardMessageID == 0 {
+		sent, err := telegramBot.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:      a.managerChatID,
+			Text:        card,
+			ReplyMarkup: ticketKeyboard(created.id),
+		})
+		if err != nil {
+			logTelegramError("send ticket to operators", err)
+			a.store.dropTicket(created.id)
+			a.store.appendHistory(chatID, sessionRoleAssistant, operatorsDownMessage)
+			sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: operatorsDownMessage})
+			return
+		}
+		cardMessageID = sent.ID
 	}
 
-	a.store.registerCard(created.id, sent.ID, card)
-	a.sendTicketHistory(ctx, telegramBot, created, sent.ID)
+	a.store.registerCard(created.id, cardMessageID, card)
+	a.sendTicketHistory(ctx, telegramBot, created, cardMessageID)
 	a.store.appendHistory(chatID, sessionRoleAssistant, handoffDoneMessage)
 	sendMessage(ctx, telegramBot, &bot.SendMessageParams{ChatID: chatID, Text: handoffDoneMessage})
 }
@@ -554,6 +824,12 @@ func (a *app) operatorMessageHandler(ctx context.Context, telegramBot *bot.Bot, 
 	}
 
 	current, result := a.store.operatorReplyTarget(message.ReplyToMessage.ID, message.From.ID)
+	if current.clientChatID != 0 {
+		lock := a.sessionLock(current.clientChatID)
+		lock.Lock()
+		defer lock.Unlock()
+		current, result = a.store.operatorReplyTarget(message.ReplyToMessage.ID, message.From.ID)
+	}
 	notice := ""
 	switch result {
 	case replyAllowed:
@@ -598,6 +874,7 @@ func (a *app) takeTicketHandler(ctx context.Context, telegramBot *bot.Bot, updat
 	switch result {
 	case takeAssigned:
 		answerCallback(ctx, telegramBot, callback.ID, "")
+		a.store.touch(current.clientChatID)
 		a.updateCard(ctx, telegramBot, current, closeKeyboard(current.id))
 	case takeAlreadyOwned:
 		answerCallback(ctx, telegramBot, callback.ID, ticketOwnNotice)
@@ -615,13 +892,24 @@ func (a *app) closeTicketHandler(ctx context.Context, telegramBot *bot.Bot, upda
 	if !ok {
 		return
 	}
+	target, ok := a.store.ticketByID(ticketID)
+	if !ok {
+		answerCallback(ctx, telegramBot, callback.ID, ticketUnknownNotice)
+		return
+	}
+	lock := a.sessionLock(target.clientChatID)
+	lock.Lock()
+	defer lock.Unlock()
 
 	current, result := a.store.closeTicket(ticketID, callback.From.ID)
 	switch result {
 	case closeDone:
 		answerCallback(ctx, telegramBot, callback.ID, "")
-		a.updateCard(ctx, telegramBot, current, nil)
 		a.store.appendHistory(current.clientChatID, sessionRoleAssistant, ticketClosedMessage)
+		closure := a.store.closeSession(current.clientChatID)
+		current.history = closure.history
+		a.updateCard(ctx, telegramBot, current, nil)
+		a.sendSessionTranscript(ctx, telegramBot, closure.history, current.cardMessageID, "Итоговая история сессии")
 		sendMessage(ctx, telegramBot, &bot.SendMessageParams{
 			ChatID:      current.clientChatID,
 			Text:        ticketClosedMessage,
@@ -833,6 +1121,23 @@ func (a *app) sendLongClientMessage(ctx context.Context, telegramBot *bot.Bot, c
 			params.ReplyMarkup = keyboard
 		}
 		sendMessage(ctx, telegramBot, params)
+	}
+}
+
+func (a *app) sendSessionTranscript(ctx context.Context, telegramBot *bot.Bot, history []sessionMessage, messageID int, heading string) {
+	transcript := formatSessionHistory(history)
+	if transcript == "" || messageID == 0 {
+		return
+	}
+	for _, part := range splitLongText(heading+":\n\n"+transcript, 3500) {
+		if _, err := telegramBot.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:          a.managerChatID,
+			Text:            part,
+			ReplyParameters: &models.ReplyParameters{MessageID: messageID, AllowSendingWithoutReply: true},
+		}); err != nil {
+			logTelegramError("send final session history", err)
+			return
+		}
 	}
 }
 

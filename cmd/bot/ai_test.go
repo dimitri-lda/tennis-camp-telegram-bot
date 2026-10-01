@@ -210,6 +210,38 @@ func TestAskRetriesWhenModelIgnoresSchema(t *testing.T) {
 	}
 }
 
+func TestAskUsesFallbackModelAfterPrimaryFailures(t *testing.T) {
+	var models []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, reader *http.Request) {
+		var request openRouterRequest
+		body, _ := io.ReadAll(reader.Body)
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		models = append(models, request.Model)
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Model == "primary/model" {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(writer, `{"model":"fallback/model","choices":[{"message":{"content":"{\"action\":\"answer\",\"message\":\"Ответ резервной модели.\"}"}}]}`)
+	}))
+	defer server.Close()
+
+	client := newAIClientWithFallback("test-key", "primary/model", "fallback/model")
+	client.endpoint = server.URL
+	decision, err := client.ask(context.Background(), "knowledge", "", "", "", nil, "вопрос")
+	if err != nil {
+		t.Fatalf("ask() error = %v", err)
+	}
+	if decision.Message != "Ответ резервной модели." {
+		t.Errorf("decision = %+v, want fallback answer", decision)
+	}
+	if strings.Join(models, ",") != "primary/model,primary/model,fallback/model" {
+		t.Errorf("models = %v, want two primary attempts then fallback", models)
+	}
+}
+
 func TestAskKeepsOnlyRecentHistory(t *testing.T) {
 	var request openRouterRequest
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, reader *http.Request) {

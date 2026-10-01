@@ -1,6 +1,12 @@
 package main
 
-import "sync"
+import (
+	"context"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"time"
+)
 
 // Dialog and ticket state lives in memory only, so it is lost on restart.
 
@@ -37,15 +43,24 @@ type sessionMessage struct {
 }
 
 type chatState struct {
-	section       string
-	topic         string
-	campID        string
-	stage         dialogStage
-	lastQuestion  string
-	lastAnswer    string
-	ticketID      int64
-	sessionActive bool
-	history       []sessionMessage
+	section          string
+	topic            string
+	campID           string
+	stage            dialogStage
+	lastQuestion     string
+	lastAnswer       string
+	ticketID         int64
+	sessionID        int64
+	sessionActive    bool
+	startedAt        time.Time
+	lastActivityAt   time.Time
+	lastAIQuestionAt time.Time
+	aiQuestionCount  int
+	aiInFlight       bool
+	aiCancel         context.CancelFunc
+	auditMessageID   int
+	auditCard        string
+	history          []sessionMessage
 }
 
 type ticket struct {
@@ -63,6 +78,28 @@ type ticket struct {
 	status        ticketStatus
 	history       []sessionMessage
 }
+
+type sessionClosure struct {
+	chatID         int64
+	sessionID      int64
+	startedAt      time.Time
+	endedAt        time.Time
+	auditMessageID int
+	auditCard      string
+	history        []sessionMessage
+	ticket         ticket
+	hadTicket      bool
+}
+
+type aiStartResult int
+
+const (
+	aiStartOK aiStartResult = iota
+	aiStartBusy
+	aiStartTooSoon
+	aiStartLimit
+	aiStartNoSession
+)
 
 type takeResult int
 
@@ -93,11 +130,23 @@ const (
 	replyUnknown
 )
 
+type botStats struct {
+	sessionsStarted atomic.Uint64
+	aiRequests      atomic.Uint64
+	aiSuccess       atomic.Uint64
+	aiFailure       atomic.Uint64
+	handoffs        atomic.Uint64
+	timeouts        atomic.Uint64
+	busyRejected    atomic.Uint64
+	throttled       atomic.Uint64
+}
+
 type store struct {
 	mu            sync.Mutex
 	chats         map[int64]chatState
 	tickets       map[int64]ticket
 	groupMessages map[int]int64
+	lastSessionID int64
 	lastTicketID  int64
 }
 
@@ -114,13 +163,28 @@ func (s *store) chat(chatID int64) chatState {
 	defer s.mu.Unlock()
 	state := s.chats[chatID]
 	state.history = cloneHistory(state.history)
+	state.aiCancel = nil
 	return state
 }
 
-func (s *store) startSession(chatID int64) {
+func (s *store) startSession(chatID int64) int64 {
+	return s.startSessionAt(chatID, time.Now())
+}
+
+func (s *store) startSessionAt(chatID int64, now time.Time) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.chats[chatID] = chatState{sessionActive: true}
+	if current := s.chats[chatID]; current.aiCancel != nil {
+		current.aiCancel()
+	}
+	s.lastSessionID++
+	s.chats[chatID] = chatState{
+		sessionID:      s.lastSessionID,
+		sessionActive:  true,
+		startedAt:      now,
+		lastActivityAt: now,
+	}
+	return s.lastSessionID
 }
 
 func (s *store) sessionActive(chatID int64) bool {
@@ -130,10 +194,17 @@ func (s *store) sessionActive(chatID int64) bool {
 }
 
 func (s *store) appendHistory(chatID int64, role, text string) {
+	s.appendHistoryAt(chatID, role, text, time.Now())
+}
+
+func (s *store) appendHistoryAt(chatID int64, role, text string, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state := s.chats[chatID]
-	state.sessionActive = true
+	state, ok := s.chats[chatID]
+	if !ok || !state.sessionActive {
+		return
+	}
+	state.lastActivityAt = now
 	state.history = append(state.history, sessionMessage{role: role, text: text})
 	s.chats[chatID] = state
 }
@@ -145,23 +216,159 @@ func (s *store) sessionHistory(chatID int64) []sessionMessage {
 }
 
 func (s *store) endSession(chatID int64) (ticket, bool) {
+	closure := s.closeSession(chatID)
+	return closure.ticket, closure.hadTicket
+}
+
+func (s *store) closeSession(chatID int64) sessionClosure {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.closeSessionLocked(chatID)
+}
 
-	state := s.chats[chatID]
+func (s *store) closeSessionIfCurrent(chatID, sessionID int64) (sessionClosure, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.chats[chatID]
+	if !ok || state.sessionID != sessionID {
+		return sessionClosure{}, false
+	}
+	return s.closeSessionLocked(chatID), true
+}
+
+func (s *store) closeSessionLocked(chatID int64) sessionClosure {
+	state, ok := s.chats[chatID]
+	if !ok {
+		return sessionClosure{chatID: chatID}
+	}
+	if state.aiCancel != nil {
+		state.aiCancel()
+	}
+	closure := sessionClosure{
+		chatID:         chatID,
+		sessionID:      state.sessionID,
+		startedAt:      state.startedAt,
+		endedAt:        time.Now(),
+		auditMessageID: state.auditMessageID,
+		auditCard:      state.auditCard,
+		history:        cloneHistory(state.history),
+	}
 	current, hasTicket := s.tickets[state.ticketID]
 	if hasTicket && current.status != ticketClosed {
 		current.status = ticketClosed
+		current.history = cloneHistory(state.history)
 		s.tickets[current.id] = current
-	} else {
-		hasTicket = false
+		closure.ticket = current
+		closure.hadTicket = true
 	}
 	delete(s.chats, chatID)
-	return current, hasTicket
+	return closure
 }
 
 func cloneHistory(history []sessionMessage) []sessionMessage {
 	return append([]sessionMessage(nil), history...)
+}
+
+func (s *store) beginAI(chatID int64, now time.Time, minInterval time.Duration, maxQuestions int, cancel context.CancelFunc) (chatState, aiStartResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, ok := s.chats[chatID]
+	if !ok || !state.sessionActive {
+		return chatState{}, aiStartNoSession
+	}
+	if state.aiInFlight {
+		return chatState{}, aiStartBusy
+	}
+	if maxQuestions > 0 && state.aiQuestionCount >= maxQuestions {
+		return chatState{}, aiStartLimit
+	}
+	if !state.lastAIQuestionAt.IsZero() && now.Sub(state.lastAIQuestionAt) < minInterval {
+		return chatState{}, aiStartTooSoon
+	}
+	state.aiInFlight = true
+	state.aiCancel = cancel
+	state.lastAIQuestionAt = now
+	state.lastActivityAt = now
+	state.aiQuestionCount++
+	s.chats[chatID] = state
+	state.history = cloneHistory(state.history)
+	state.aiCancel = nil
+	return state, aiStartOK
+}
+
+func (s *store) finishAI(chatID, sessionID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.chats[chatID]
+	if !ok || !state.sessionActive || state.sessionID != sessionID || !state.aiInFlight {
+		return false
+	}
+	state.aiInFlight = false
+	state.aiCancel = nil
+	s.chats[chatID] = state
+	return true
+}
+
+func (s *store) registerAuditCard(chatID, sessionID int64, messageID int, card string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.chats[chatID]
+	if !ok || state.sessionID != sessionID || state.auditMessageID != 0 {
+		return false
+	}
+	state.auditMessageID = messageID
+	state.auditCard = card
+	s.chats[chatID] = state
+	return true
+}
+
+func (s *store) expireSessionIfIdle(chatID, sessionID int64, now time.Time, aiTimeout, operatorTimeout time.Duration) (sessionClosure, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.chats[chatID]
+	if !ok || state.sessionID != sessionID || state.lastActivityAt.IsZero() {
+		return sessionClosure{}, false
+	}
+	timeout := aiTimeout
+	if current, ok := s.tickets[state.ticketID]; ok && current.status == ticketTaken {
+		timeout = operatorTimeout
+	}
+	if timeout <= 0 || now.Sub(state.lastActivityAt) < timeout {
+		return sessionClosure{}, false
+	}
+	return s.closeSessionLocked(chatID), true
+}
+
+func (s *store) expiredChatIDs(now time.Time, aiTimeout, operatorTimeout time.Duration) []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]int64, 0)
+	for chatID, state := range s.chats {
+		if !state.sessionActive || state.lastActivityAt.IsZero() {
+			continue
+		}
+		timeout := aiTimeout
+		if current, ok := s.tickets[state.ticketID]; ok && current.status == ticketTaken {
+			timeout = operatorTimeout
+		}
+		if timeout > 0 && now.Sub(state.lastActivityAt) >= timeout {
+			ids = append(ids, chatID)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func (s *store) touch(chatID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.chats[chatID]
+	if !ok {
+		return
+	}
+	state.lastActivityAt = time.Now()
+	s.chats[chatID] = state
 }
 
 func (s *store) update(chatID int64, mutate func(*chatState)) {
@@ -180,6 +387,7 @@ func (s *store) selectSection(chatID int64, section string) {
 		state.stage = stageIdle
 		state.lastQuestion = ""
 		state.lastAnswer = ""
+		state.lastActivityAt = time.Now()
 	})
 }
 
@@ -191,6 +399,7 @@ func (s *store) selectCamp(chatID int64, campID string) {
 		state.stage = stageIdle
 		state.lastQuestion = ""
 		state.lastAnswer = ""
+		state.lastActivityAt = time.Now()
 	})
 }
 
@@ -202,6 +411,7 @@ func (s *store) selectTopic(chatID int64, section, topic, campID string) {
 		state.stage = stageIdle
 		state.lastQuestion = ""
 		state.lastAnswer = ""
+		state.lastActivityAt = time.Now()
 	})
 }
 
@@ -216,15 +426,16 @@ func (s *store) createTicket(clientChatID int64, campTitle, question, aiAnswer s
 
 	s.lastTicketID++
 	created := ticket{
-		id:           s.lastTicketID,
-		clientChatID: clientChatID,
-		section:      state.section,
-		topic:        state.topic,
-		campTitle:    campTitle,
-		question:     question,
-		aiAnswer:     aiAnswer,
-		status:       ticketOpen,
-		history:      cloneHistory(state.history),
+		id:            s.lastTicketID,
+		clientChatID:  clientChatID,
+		section:       state.section,
+		topic:         state.topic,
+		campTitle:     campTitle,
+		question:      question,
+		aiAnswer:      aiAnswer,
+		cardMessageID: state.auditMessageID,
+		status:        ticketOpen,
+		history:       cloneHistory(state.history),
 	}
 	s.tickets[created.id] = created
 
@@ -318,6 +529,13 @@ func (s *store) takeTicket(ticketID, operatorID int64, operatorName string) (tic
 	current.status = ticketTaken
 	s.tickets[ticketID] = current
 	return current, takeAssigned
+}
+
+func (s *store) ticketByID(ticketID int64) (ticket, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.tickets[ticketID]
+	return current, ok
 }
 
 // closeTicket may be closed by the assigned operator, or by anyone while unassigned.

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSelectCampRemembersChoice(t *testing.T) {
@@ -91,6 +93,103 @@ func TestSessionLifecycleKeepsCompleteHistory(t *testing.T) {
 	}
 	if state.sessionActive(7) || len(state.sessionHistory(7)) != 0 {
 		t.Error("endSession() did not clear the client session")
+	}
+}
+
+func TestSessionIDsAndAIGuards(t *testing.T) {
+	state := newStore()
+	now := time.Date(2026, time.October, 1, 10, 0, 0, 0, time.UTC)
+	firstSession := state.startSessionAt(7, now)
+	if firstSession == 0 {
+		t.Fatal("startSessionAt() returned a zero session ID")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	snapshot, result := state.beginAI(7, now, 5*time.Second, 2, cancel)
+	if result != aiStartOK || snapshot.sessionID != firstSession {
+		t.Fatalf("beginAI() = %+v, %d, want current session and aiStartOK", snapshot, result)
+	}
+	if _, result = state.beginAI(7, now, 5*time.Second, 2, func() {}); result != aiStartBusy {
+		t.Errorf("second beginAI() = %d, want aiStartBusy", result)
+	}
+	if !state.finishAI(7, firstSession) {
+		t.Fatal("finishAI() = false for current session")
+	}
+	if _, result = state.beginAI(7, now.Add(2*time.Second), 5*time.Second, 2, func() {}); result != aiStartTooSoon {
+		t.Errorf("early beginAI() = %d, want aiStartTooSoon", result)
+	}
+	if _, result = state.beginAI(7, now.Add(6*time.Second), 5*time.Second, 2, func() {}); result != aiStartOK {
+		t.Fatalf("second allowed beginAI() = %d, want aiStartOK", result)
+	}
+	state.finishAI(7, firstSession)
+	if _, result = state.beginAI(7, now.Add(12*time.Second), 5*time.Second, 2, func() {}); result != aiStartLimit {
+		t.Errorf("third beginAI() = %d, want aiStartLimit", result)
+	}
+
+	cancel()
+	secondSession := state.startSessionAt(7, now.Add(time.Hour))
+	if secondSession == firstSession {
+		t.Error("new session reused the previous session ID")
+	}
+	if state.finishAI(7, firstSession) {
+		t.Error("finishAI() accepted a stale session ID")
+	}
+	_ = ctx
+}
+
+func TestEndSessionCancelsInFlightAI(t *testing.T) {
+	state := newStore()
+	now := time.Now()
+	sessionID := state.startSessionAt(7, now)
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, result := state.beginAI(7, now, 0, 10, cancel); result != aiStartOK {
+		t.Fatalf("beginAI() = %d, want aiStartOK", result)
+	}
+
+	closure := state.closeSession(7)
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("closeSession() did not cancel the in-flight AI request")
+	}
+	if closure.sessionID != sessionID || state.finishAI(7, sessionID) {
+		t.Errorf("closure = %+v; stale AI request remained valid", closure)
+	}
+}
+
+func TestExpiredSessionsUseDifferentTimeouts(t *testing.T) {
+	state := newStore()
+	now := time.Date(2026, time.October, 1, 10, 0, 0, 0, time.UTC)
+	state.startSessionAt(1, now)
+	state.startSessionAt(2, now)
+	ticket, _ := state.createTicket(2, "", "Вопрос", "")
+	state.takeTicket(ticket.id, 11, "Оператор")
+
+	expired := state.expiredChatIDs(now.Add(25*time.Hour), 24*time.Hour, 48*time.Hour)
+	if len(expired) != 1 || expired[0] != 1 {
+		t.Errorf("expiredChatIDs(25h) = %v, want only AI session 1", expired)
+	}
+	expired = state.expiredChatIDs(now.Add(49*time.Hour), 24*time.Hour, 48*time.Hour)
+	if len(expired) != 2 {
+		t.Errorf("expiredChatIDs(49h) = %v, want both sessions", expired)
+	}
+}
+
+func TestAuditCardIsReusedByOperatorTicket(t *testing.T) {
+	state := newStore()
+	sessionID := state.startSessionAt(7, time.Now())
+	state.appendHistory(7, sessionRoleUser, "Первый вопрос")
+	if !state.registerAuditCard(7, sessionID, 500, "AI-сессия") {
+		t.Fatal("registerAuditCard() = false, want true")
+	}
+
+	created, ok := state.createTicket(7, "", "Первый вопрос", "")
+	if !ok || created.cardMessageID != 500 {
+		t.Errorf("createTicket() = %+v, %t, want audit message 500 reused", created, ok)
+	}
+	closure := state.closeSession(7)
+	if !closure.hadTicket || closure.ticket.id != created.id || closure.auditMessageID != 500 || len(closure.history) != 1 {
+		t.Errorf("closeSession() = %+v, want ticket, audit card and transcript", closure)
 	}
 }
 
